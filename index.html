@@ -173,7 +173,7 @@ function PortfolioCard({ assets, onSend, onReceive, onImport, importedWallet }) 
   }, [total]);
 
   return (
-    <div style={{background:'linear-gradient(135deg,#1a1d26,#1e1b3a)',border:'1px solid #2a2d3e',borderRadius:20,padding:'28px 28px 20px',position:'relative',overflow:'hidden'}}>
+    <div style={{background:'linear-gradient(135deg,#1a1d26,#1e1b3a)',border:'1px solid #2a2d3e',borderRadius:20,padding:'28px 28px 20px',position:'relative'}}>
       <div style={{position:'absolute',top:-40,right:20,width:200,height:200,background:'radial-gradient(circle,rgba(108,99,255,.18),transparent 70%)',pointerEvents:'none'}}/>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24}}>
         <div>
@@ -240,13 +240,12 @@ function StatsBar({ assets }) {
     {label:'Avg 24h Change',  value:`${avg>=0?'+':''}${avg.toFixed(2)}%`, sub:`${assets.length} assets`, color:avg>=0?'#22c55e':'#ef4444'},
   ];
   return (
-    <div style={{display:'flex',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden'}}>
+    <div style={{display:'flex',flexWrap:'wrap',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14}}>
       {stats.map((s,i)=>(
-        <div key={i} style={{flex:1,display:'flex'}}>
-          {i>0&&<div style={{width:1,background:'#2a2d3e'}}/>}
-          <div style={{flex:1,padding:'14px 18px'}}>
-            <div style={{fontSize:11,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:4}}>{s.label}</div>
-            <div style={{fontSize:16,fontWeight:700,color:s.color,marginBottom:2}}>{s.value}</div>
+        <div key={i} style={{flex:'1 1 140px',display:'flex',borderRight:i<stats.length-1?'1px solid #2a2d3e':'none',borderBottom:'none'}}>
+          <div style={{flex:1,padding:'14px 16px'}}>
+            <div style={{fontSize:11,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:4,whiteSpace:'nowrap'}}>{s.label}</div>
+            <div style={{fontSize:15,fontWeight:700,color:s.color,marginBottom:2}}>{s.value}</div>
             {s.sub&&<div style={{fontSize:11,color:'#555874'}}>{s.sub}</div>}
           </div>
         </div>
@@ -264,7 +263,7 @@ function AssetList({ assets }) {
     sort==='change' ? b.change24h-a.change24h : b.price-a.price);
 
   return (
-    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'hidden'}}>
+    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'auto'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 18px 10px'}}>
         <span style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Assets</span>
         <div style={{display:'flex',gap:3,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:8,padding:3}}>
@@ -338,7 +337,7 @@ function TxHistory({ txs: propTxs }) {
   const allTxs = propTxs || TRANSACTIONS;
   const filtered = allTxs.filter(tx=>filter==='all'||tx.type===filter);
   return (
-    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'hidden'}}>
+    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'auto'}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 18px 10px'}}>
         <span style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Transactions</span>
         <div style={{display:'flex',gap:3,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:8,padding:3}}>
