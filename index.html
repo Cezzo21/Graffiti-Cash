@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptoVault</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: #0a0b0f;
+      --bg-secondary: #12141a;
+      --bg-card: #1a1d26;
+      --border: #2a2d3e;
+      --text-primary: #f0f2ff;
+      --text-secondary: #8b8fa8;
+      --text-muted: #555874;
+      --accent: #6c63ff;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+    }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+    #root { height: 100vh; display: flex; }
+    button { font-family: inherit; cursor: pointer; border: none; outline: none; }
+    input { font-family: inherit; outline: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideIn { from { opacity: 0; transform: scale(0.96) translateY(12px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes countUp { from { opacity:0; } to { opacity:1; } }
+    .fade { animation: fadeIn 0.3s ease forwards; }
+    .slide { animation: slideIn 0.25s ease forwards; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ─── DATA ───────────────────────────────────────────────────────────────────
+const ASSETS = [
+  { id:'btc', name:'Bitcoin',   symbol:'BTC', price:68420.50, change24h: 2.34, balance:0.4821,  color:'#f7931a', icon:'₿', sparkline:[62000,63500,61800,65000,67200,66500,68420] },
+  { id:'eth', name:'Ethereum',  symbol:'ETH', price:3812.75,  change24h:-1.12, balance:3.152,   color:'#627eea', icon:'Ξ', sparkline:[3900,3850,3780,3700,3740,3800,3812] },
+  { id:'sol', name:'Solana',    symbol:'SOL', price:182.30,   change24h: 5.61, balance:42.8,    color:'#9945ff', icon:'◎', sparkline:[155,162,170,165,175,178,182] },
+  { id:'bnb', name:'BNB',       symbol:'BNB', price:598.40,   change24h: 0.87, balance:8.5,     color:'#f3ba2f', icon:'B', sparkline:[575,580,590,585,592,596,598] },
+  { id:'ada', name:'Cardano',   symbol:'ADA', price:0.6142,   change24h:-2.45, balance:12500,   color:'#4a90d9', icon:'₳', sparkline:[0.65,0.63,0.61,0.60,0.615,0.612,0.614] },
+  { id:'dot', name:'Polkadot',  symbol:'DOT', price:9.87,     change24h: 3.21, balance:320,     color:'#e6007a', icon:'●', sparkline:[9.1,9.3,9.5,9.4,9.6,9.75,9.87] },
+];
+
+const TRANSACTIONS = [
+  { id:1, type:'receive', asset:'BTC', amount:0.05,  value:3421.03, from:'0x4a3b...9f2c', date:'2026-03-08T10:22:00', status:'confirmed' },
+  { id:2, type:'send',    asset:'ETH', amount:0.8,   value:3050.20, to:'0x7d1e...33ab',   date:'2026-03-07T16:05:00', status:'confirmed' },
+  { id:3, type:'swap',    asset:'SOL', amount:10,    value:1823.00, fromAsset:'BNB',      date:'2026-03-06T09:44:00', status:'confirmed' },
+  { id:4, type:'receive', asset:'SOL', amount:25,    value:4557.50, from:'0x9c2d...11fe', date:'2026-03-05T21:17:00', status:'confirmed' },
+  { id:5, type:'send',    asset:'ADA', amount:2000,  value:1228.40, to:'0x3f8a...77bc',   date:'2026-03-04T13:30:00', status:'pending'   },
+  { id:6, type:'receive', asset:'BTC', amount:0.12,  value:8210.46, from:'0x1b5c...44de', date:'2026-03-03T08:00:00', status:'confirmed' },
+];
+
+const WALLET_ADDRESS = '0x4a3b8c2d1e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b';
+
+async function loadBitcoinWallet(address, network) {
+  const base = network === 'testnet'
+    ? 'https://blockstream.info/testnet/api'
+    : 'https://blockstream.info/api';
+  const addrRes = await fetch(`${base}/address/${address}`);
+  if (!addrRes.ok) throw new Error('Address not found. Check the address and selected network.');
+  const addrData = await addrRes.json();
+  const sats = addrData.chain_stats.funded_txo_sum - addrData.chain_stats.spent_txo_sum;
+  const txRes = await fetch(`${base}/address/${address}/txs`);
+  const rawTxs = txRes.ok ? await txRes.json() : [];
+  const txs = rawTxs.slice(0, 25).map(tx => {
+    const recvSats = tx.vout.filter(o => o.scriptpubkey_address === address).reduce((s, o) => s + o.value, 0);
+    const isSend = tx.vin.some(i => i.prevout && i.prevout.scriptpubkey_address === address);
+    const peer = tx.vin[0] && tx.vin[0].prevout && tx.vin[0].prevout.scriptpubkey_address;
+    return {
+      id: tx.txid,
+      type: isSend ? 'send' : 'receive',
+      asset: 'BTC',
+      amount: recvSats / 1e8,
+      value: (recvSats / 1e8) * 68420,
+      date: tx.status.block_time ? new Date(tx.status.block_time * 1000).toISOString() : new Date().toISOString(),
+      status: tx.status.confirmed ? 'confirmed' : 'pending',
+      from: !isSend && peer ? peer.slice(0,8)+'...'+peer.slice(-6) : undefined,
+      to: isSend ? address.slice(0,8)+'...'+address.slice(-6) : undefined,
+    };
+  });
+  return { address, network, balance: sats / 1e8, txCount: addrData.chain_stats.tx_count, txs };
+}
+
+function fUSD(v) {
+  return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:v<1?4:2}).format(v);
+}
+function fCrypto(v, sym) {
+  return `${v.toLocaleString('en-US',{maximumFractionDigits:v<1?4:v<100?4:2})} ${sym}`;
+}
+function fDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' · ' + d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}
+function portfolioTotal(assets) { return assets.reduce((s,a)=>s+a.price*a.balance,0); }
+
+
+// ─── SPARKLINE ───────────────────────────────────────────────────────────────
+function Sparkline({ data, color, width=80, height=32 }) {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data), max = Math.max(...data), range = max-min||1;
+  const pts = data.map((v,i)=>`${(i/(data.length-1))*width},${height-((v-min)/range)*(height-4)-2}`);
+  const path = `M ${pts.join(' L ')}`;
+  const area = `M ${pts[0]} L ${pts.join(' L ')} L ${width},${height} L 0,${height} Z`;
+  const gid = `g${color.replace('#','')}`;
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.3"/>
+          <stop offset="100%" stopColor={color} stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#${gid})`}/>
+      <path d={path} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
+
+
+// ─── MINI DONUT ──────────────────────────────────────────────────────────────
+function Donut({ assets }) {
+  const total = portfolioTotal(assets);
+  const sz = 96, r = 38, cx = 48, cy = 48, circ = 2*Math.PI*r;
+  let offset = 0;
+  return (
+    <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`} style={{transform:'rotate(-90deg)'}}>
+      {assets.map(a => {
+        const pct = (a.price*a.balance)/total;
+        const len = pct*circ;
+        const sl = <circle key={a.id} cx={cx} cy={cy} r={r} fill="none" stroke={a.color} strokeWidth="11"
+          strokeDasharray={`${len} ${circ-len}`} strokeDashoffset={-offset}/>;
+        offset += len;
+        return sl;
+      })}
+    </svg>
+  );
+}
+
+
+// ─── PORTFOLIO CARD ───────────────────────────────────────────────────────────
+function PortfolioCard({ assets, onSend, onReceive, onImport, importedWallet }) {
+  const total = portfolioTotal(assets);
+  const prev = total * 0.9712;
+  const change = total - prev;
+  const pct = (change/prev)*100;
+  const [display, setDisplay] = React.useState(0);
+
+  React.useEffect(() => {
+    let v = 0, id;
+    const step = total/60;
+    id = setInterval(()=>{ v+=step; if(v>=total){setDisplay(total);clearInterval(id);}else setDisplay(v); },16);
+    return ()=>clearInterval(id);
+  }, [total]);
+
+  return (
+    <div style={{background:'linear-gradient(135deg,#1a1d26,#1e1b3a)',border:'1px solid #2a2d3e',borderRadius:20,padding:'28px 28px 20px',position:'relative',overflow:'hidden'}}>
+      <div style={{position:'absolute',top:-40,right:20,width:200,height:200,background:'radial-gradient(circle,rgba(108,99,255,.18),transparent 70%)',pointerEvents:'none'}}/>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24}}>
+        <div>
+          <div style={{fontSize:11,color:'#8b8fa8',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Total Portfolio Value</div>
+          <div style={{fontSize:38,fontWeight:800,color:'#f0f2ff',letterSpacing:'-1px',lineHeight:1.1,marginBottom:6}}>{fUSD(display)}</div>
+          <div style={{display:'flex',alignItems:'center',gap:6,fontSize:13,fontWeight:500}}>
+            <span style={{color:change>=0?'#22c55e':'#ef4444'}}>{change>=0?'▲':'▼'} {fUSD(Math.abs(change))} ({Math.abs(pct).toFixed(2)}%)</span>
+            <span style={{color:'#555874',fontSize:12}}>24h</span>
+          </div>
+        </div>
+        <Donut assets={assets}/>
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        <div style={{display:'flex',gap:10}}>
+          <QuickBtn icon={<SendIco/>} label="Send"    onClick={onSend}     primary/>
+          <QuickBtn icon={<RecvIco/>} label="Receive" onClick={onReceive}/>
+          <QuickBtn icon={<SwapIco/>} label="Swap"    onClick={()=>{}}/>
+          <QuickBtn icon={<BuyIco/>}  label="Buy"     onClick={()=>{}}/>
+        </div>
+        {importedWallet
+          ? <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'rgba(34,197,94,.08)',border:'1px solid rgba(34,197,94,.25)',borderRadius:10}}>
+              <span style={{width:7,height:7,borderRadius:'50%',background:'#22c55e',flexShrink:0,display:'inline-block'}}/>
+              <span style={{fontSize:11,color:'#22c55e',fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                {importedWallet.network==='testnet'?'[testnet] ':''}{importedWallet.address.slice(0,12)}…{importedWallet.address.slice(-8)}
+              </span>
+              <span style={{fontSize:11,color:'#8b8fa8',flexShrink:0}}>{importedWallet.balance.toFixed(8)} BTC</span>
+            </div>
+          : <button onClick={onImport} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,padding:'9px',borderRadius:10,fontSize:12,fontWeight:600,background:'transparent',border:'1px dashed #2a2d3e',color:'#8b8fa8',cursor:'pointer',width:'100%'}}>
+              <ImportIco/> Import Bitcoin Wallet
+            </button>
+        }
+      </div>
+    </div>
+  );
+}
+
+function QuickBtn({ icon, label, onClick, primary }) {
+  const [h,setH] = React.useState(false);
+  return (
+    <button onClick={onClick} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+      style={{display:'flex',alignItems:'center',gap:7,padding:'9px 16px',borderRadius:10,fontSize:13,fontWeight:600,
+        background:primary?(h?'linear-gradient(135deg,#7d75ff,#aea9ff)':'linear-gradient(135deg,#6c63ff,#9d96ff)'):(h?'#2a2d3e':'#22263a'),
+        border:primary?'1px solid transparent':'1px solid #2a2d3e',
+        color:primary?'#fff':'#f0f2ff',
+        transform:primary&&h?'translateY(-1px)':'none',
+        boxShadow:primary&&h?'0 4px 16px rgba(108,99,255,.4)':'none',
+        transition:'all .15s'}}>
+      {icon}<span>{label}</span>
+    </button>
+  );
+}
+
+
+// ─── STATS BAR ────────────────────────────────────────────────────────────────
+function StatsBar({ assets }) {
+  const total = portfolioTotal(assets);
+  const best  = [...assets].sort((a,b)=>b.change24h-a.change24h)[0];
+  const worst = [...assets].sort((a,b)=>a.change24h-b.change24h)[0];
+  const avg   = assets.reduce((s,a)=>s+a.change24h,0)/assets.length;
+  const stats = [
+    {label:'Portfolio Value', value:fUSD(total),            color:'#6c63ff'},
+    {label:'Top Gainer',      value:best.symbol,  sub:`+${best.change24h.toFixed(2)}%`,   color:'#22c55e'},
+    {label:'Top Loser',       value:worst.symbol, sub:`${worst.change24h.toFixed(2)}%`,   color:'#ef4444'},
+    {label:'Avg 24h Change',  value:`${avg>=0?'+':''}${avg.toFixed(2)}%`, sub:`${assets.length} assets`, color:avg>=0?'#22c55e':'#ef4444'},
+  ];
+  return (
+    <div style={{display:'flex',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden'}}>
+      {stats.map((s,i)=>(
+        <div key={i} style={{flex:1,display:'flex'}}>
+          {i>0&&<div style={{width:1,background:'#2a2d3e'}}/>}
+          <div style={{flex:1,padding:'14px 18px'}}>
+            <div style={{fontSize:11,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:4}}>{s.label}</div>
+            <div style={{fontSize:16,fontWeight:700,color:s.color,marginBottom:2}}>{s.value}</div>
+            {s.sub&&<div style={{fontSize:11,color:'#555874'}}>{s.sub}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+// ─── ASSET LIST ───────────────────────────────────────────────────────────────
+function AssetList({ assets }) {
+  const [sort, setSort] = React.useState('value');
+  const sorted = [...assets].sort((a,b)=>
+    sort==='value'  ? b.price*b.balance-a.price*a.balance :
+    sort==='change' ? b.change24h-a.change24h : b.price-a.price);
+
+  return (
+    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'hidden'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 18px 10px'}}>
+        <span style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Assets</span>
+        <div style={{display:'flex',gap:3,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:8,padding:3}}>
+          {['value','price','change'].map(s=>(
+            <button key={s} onClick={()=>setSort(s)}
+              style={{background:sort===s?'#2a2d3e':'transparent',border:'none',color:sort===s?'#f0f2ff':'#8b8fa8',
+                fontSize:11,fontWeight:600,padding:'4px 10px',borderRadius:6,cursor:'pointer',textTransform:'capitalize'}}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{padding:'0 8px 4px'}}>
+        <div style={{display:'flex',padding:'6px 10px',fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px'}}>
+          <span style={{flex:2}}>Asset</span>
+          <span style={{flex:1.5,textAlign:'right'}}>Price</span>
+          <span style={{flex:1,textAlign:'center'}}>24h</span>
+          <span style={{flex:1.2,textAlign:'center'}}>Chart</span>
+          <span style={{flex:1.5,textAlign:'right'}}>Holdings</span>
+          <span style={{flex:1.5,textAlign:'right'}}>Value</span>
+        </div>
+        {sorted.map((a,i)=><AssetRow key={a.id} asset={a} idx={i}/>)}
+      </div>
+    </div>
+  );
+}
+
+function AssetRow({ asset:a, idx }) {
+  const [h,setH] = React.useState(false);
+  const pos = a.change24h>=0;
+  return (
+    <div className="fade" onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+      style={{display:'flex',alignItems:'center',padding:'11px 10px',borderRadius:10,cursor:'pointer',
+        background:h?'#22263a':'transparent',transition:'background .15s',animationDelay:`${idx*40}ms`}}>
+      <div style={{flex:2,display:'flex',alignItems:'center',gap:11}}>
+        <div style={{width:36,height:36,borderRadius:'50%',background:`${a.color}22`,border:`1.5px solid ${a.color}44`,
+          display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,color:a.color,flexShrink:0}}>
+          {a.icon}
+        </div>
+        <div>
+          <div style={{fontSize:14,fontWeight:600,color:'#f0f2ff'}}>{a.name}</div>
+          <div style={{fontSize:11,color:'#555874',marginTop:1}}>{a.symbol}</div>
+        </div>
+      </div>
+      <div style={{flex:1.5,textAlign:'right',fontSize:14,fontWeight:500,color:'#f0f2ff'}}>{fUSD(a.price)}</div>
+      <div style={{flex:1,display:'flex',justifyContent:'center'}}>
+        <span style={{padding:'3px 7px',borderRadius:6,fontSize:11,fontWeight:600,
+          background:pos?'#22c55e18':'#ef444418',color:pos?'#22c55e':'#ef4444'}}>
+          {pos?'+':''}{a.change24h.toFixed(2)}%
+        </span>
+      </div>
+      <div style={{flex:1.2,display:'flex',justifyContent:'center'}}>
+        <Sparkline data={a.sparkline} color={pos?'#22c55e':'#ef4444'} width={72} height={28}/>
+      </div>
+      <div style={{flex:1.5,textAlign:'right',fontSize:12,color:'#8b8fa8'}}>{fCrypto(a.balance,a.symbol)}</div>
+      <div style={{flex:1.5,textAlign:'right',fontSize:14,fontWeight:600,color:'#f0f2ff'}}>{fUSD(a.price*a.balance)}</div>
+    </div>
+  );
+}
+
+
+// ─── TRANSACTION HISTORY ─────────────────────────────────────────────────────
+const TX_TYPE = {
+  receive:{ color:'#22c55e', bg:'#22c55e18', label:'Received' },
+  send:   { color:'#ef4444', bg:'#ef444418', label:'Sent'     },
+  swap:   { color:'#f59e0b', bg:'#f59e0b18', label:'Swapped'  },
+};
+
+function TxHistory({ txs: propTxs }) {
+  const [filter, setFilter] = React.useState('all');
+  const allTxs = propTxs || TRANSACTIONS;
+  const filtered = allTxs.filter(tx=>filter==='all'||tx.type===filter);
+  return (
+    <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,overflow:'hidden'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 18px 10px'}}>
+        <span style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Transactions</span>
+        <div style={{display:'flex',gap:3,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:8,padding:3}}>
+          {['all','receive','send','swap'].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{background:filter===f?'#2a2d3e':'transparent',border:'none',color:filter===f?'#f0f2ff':'#8b8fa8',
+                fontSize:11,fontWeight:600,padding:'4px 9px',borderRadius:6,cursor:'pointer',textTransform:'capitalize'}}>
+              {f}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{padding:'0 8px 8px'}}>
+        {filtered.map((tx,i)=><TxRow key={tx.id} tx={tx} idx={i}/>)}
+        {!filtered.length&&<div style={{textAlign:'center',color:'#555874',padding:'32px 0',fontSize:13}}>No transactions</div>}
+      </div>
+    </div>
+  );
+}
+
+function TxRow({ tx, idx }) {
+  const [h,setH] = React.useState(false);
+  const t = TX_TYPE[tx.type];
+  const ArrowIcon = tx.type==='receive'?ArrowDwnIco:tx.type==='send'?ArrowUpIco:SwapIco;
+  return (
+    <div className="fade" onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+      style={{display:'flex',alignItems:'center',gap:12,padding:'11px 10px',borderRadius:10,
+        background:h?'#22263a':'transparent',transition:'background .15s',animationDelay:`${idx*50}ms`}}>
+      <div style={{width:38,height:38,borderRadius:10,background:t.bg,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+        <ArrowIcon color={t.color}/>
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:13,marginBottom:3}}>
+          <span style={{color:t.color,fontWeight:600}}>{t.label}</span>{' '}
+          <span style={{color:'#f0f2ff'}}>{tx.asset}</span>
+          {tx.type==='swap'&&<span style={{color:'#555874',fontSize:11}}> from {tx.fromAsset}</span>}
+        </div>
+        <div style={{display:'flex',gap:6,fontSize:11,color:'#555874'}}>
+          {tx.from&&<span>From {tx.from}</span>}
+          {tx.to&&<span>To {tx.to}</span>}
+          {tx.type==='swap'&&<span>Via DEX</span>}
+          <span>·</span><span>{fDate(tx.date)}</span>
+        </div>
+      </div>
+      <div style={{textAlign:'right'}}>
+        <div style={{fontSize:13,fontWeight:600,color:tx.type==='receive'?'#22c55e':'#f0f2ff',marginBottom:2}}>
+          {tx.type==='receive'?'+':tx.type==='send'?'-':''}{tx.amount} {tx.asset}
+        </div>
+        <div style={{fontSize:11,color:'#555874'}}>{fUSD(tx.value)}</div>
+      </div>
+      <div style={{width:84,display:'flex',justifyContent:'flex-end'}}>
+        <span style={{display:'flex',alignItems:'center',gap:4,padding:'3px 9px',borderRadius:6,fontSize:10,fontWeight:600,textTransform:'capitalize',
+          background:tx.status==='confirmed'?'#22c55e18':'#f59e0b18',color:tx.status==='confirmed'?'#22c55e':'#f59e0b'}}>
+          {tx.status==='pending'&&<span style={{width:5,height:5,borderRadius:'50%',background:'#f59e0b',animation:'pulse 1.5s infinite',display:'inline-block'}}/>}
+          {tx.status}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── MODAL SHELL ─────────────────────────────────────────────────────────────
+function Modal({ open, onClose, title, children }) {
+  const ref = React.useRef(null);
+  React.useEffect(()=>{
+    const h=e=>{ if(e.key==='Escape')onClose(); };
+    if(open) document.addEventListener('keydown',h);
+    return()=>document.removeEventListener('keydown',h);
+  },[open,onClose]);
+  if(!open)return null;
+  return (
+    <div ref={ref} onClick={e=>{if(e.target===ref.current)onClose();}}
+      style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',backdropFilter:'blur(5px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
+      <div className="slide" style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:440,maxWidth:'95vw',boxShadow:'0 24px 64px rgba(0,0,0,.6)'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'22px 24px 16px',borderBottom:'1px solid #2a2d3e'}}>
+          <span style={{fontSize:18,fontWeight:700,color:'#f0f2ff'}}>{title}</span>
+          <button onClick={onClose} style={{background:'#22263a',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <CloseIco/>
+          </button>
+        </div>
+        <div style={{padding:24}}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── SEND MODAL ───────────────────────────────────────────────────────────────
+function SendModal({ open, onClose }) {
+  const [step, setStep] = React.useState(1);
+  const [asset, setAsset] = React.useState(ASSETS[0]);
+  const [to, setTo] = React.useState('');
+  const [amount, setAmount] = React.useState('');
+  const [dropdown, setDropdown] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+
+  const num = parseFloat(amount)||0;
+  const usd = num*asset.price;
+  const valid = to.length>10 && num>0 && num<=asset.balance;
+
+  function reset() { setStep(1);setTo('');setAmount('');setLoading(false); }
+  function close() { reset();onClose(); }
+
+  function doSend() {
+    setLoading(true);
+    setTimeout(()=>{ setLoading(false);setStep(3); },2000);
+  }
+
+  return (
+    <Modal open={open} onClose={close} title="Send Crypto">
+      {step===1&&(
+        <div style={{display:'flex',flexDirection:'column',gap:18}}>
+          {/* Asset picker */}
+          <div>
+            <Label>Asset</Label>
+            <div style={{position:'relative'}}>
+              <button onClick={()=>setDropdown(!dropdown)} style={{width:'100%',display:'flex',alignItems:'center',gap:10,padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,cursor:'pointer',textAlign:'left'}}>
+                <Coin a={asset} sz={30}/>
+                <span style={{fontSize:14,fontWeight:600,color:'#f0f2ff',flex:1}}>{asset.name}</span>
+                <span style={{fontSize:11,color:'#555874'}}>Bal: {asset.balance} {asset.symbol}</span>
+                <span style={{color:'#555874',fontSize:11}}>▾</span>
+              </button>
+              {dropdown&&(
+                <div style={{position:'absolute',top:'100%',left:0,right:0,marginTop:4,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:10,zIndex:10,boxShadow:'0 8px 32px rgba(0,0,0,.5)',overflow:'hidden'}}>
+                  {ASSETS.map(a=>(
+                    <button key={a.id} onClick={()=>{setAsset(a);setDropdown(false);setAmount('');}}
+                      style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',width:'100%',border:'none',background:asset.id===a.id?'#22263a':'transparent',cursor:'pointer',transition:'background .1s'}}>
+                      <Coin a={a} sz={26}/>
+                      <span style={{fontSize:13,color:'#f0f2ff'}}>{a.name}</span>
+                      <span style={{marginLeft:'auto',fontSize:11,color:'#555874'}}>{a.balance} {a.symbol}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          {/* To */}
+          <div>
+            <Label>Recipient Address</Label>
+            <input value={to} onChange={e=>setTo(e.target.value)} placeholder="0x... or ENS name"
+              style={{width:'100%',padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:14}}/>
+          </div>
+          {/* Amount */}
+          <div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+              <Label style={{}}>Amount</Label>
+              <button onClick={()=>setAmount(String(asset.balance))} style={{background:'rgba(108,99,255,.15)',border:'none',color:'#6c63ff',fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:5,cursor:'pointer',letterSpacing:'.5px'}}>MAX</button>
+            </div>
+            <div style={{display:'flex',alignItems:'center',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,overflow:'hidden'}}>
+              <input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00" type="number"
+                style={{flex:1,padding:'12px 14px',background:'transparent',border:'none',color:'#f0f2ff',fontSize:20,fontWeight:700}}/>
+              <span style={{padding:'12px 14px',color:'#8b8fa8',fontSize:13,fontWeight:600}}>{asset.symbol}</span>
+            </div>
+            {num>0&&<div style={{marginTop:5,fontSize:11,color:'#555874'}}>≈ {fUSD(usd)}</div>}
+            {num>asset.balance&&<div style={{marginTop:5,fontSize:11,color:'#ef4444'}}>Insufficient balance</div>}
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between',padding:'9px 12px',background:'#12141a',borderRadius:8,fontSize:13}}>
+            <span style={{color:'#555874'}}>Estimated fee</span><span style={{color:'#8b8fa8',fontWeight:500}}>~$2.40</span>
+          </div>
+          <PrimaryBtn disabled={!valid} onClick={()=>setStep(2)}>Review Transaction</PrimaryBtn>
+        </div>
+      )}
+      {step===2&&(
+        <div style={{display:'flex',flexDirection:'column',gap:18}}>
+          <div style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:11}}>
+            {[['Sending',`${amount} ${asset.symbol}`],['USD Value',fUSD(usd)],null,['To',to],['Network',asset.name],['Fee','~$2.40']].map((r,i)=>
+              r===null
+                ? <div key={i} style={{height:1,background:'#2a2d3e'}}/>
+                : <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <span style={{fontSize:12,color:'#555874'}}>{r[0]}</span>
+                    <span style={{fontSize:13,color:'#f0f2ff',fontWeight:500,fontFamily:r[0]==='To'?'monospace':undefined,fontSize:r[0]==='To'?11:13}}>{r[1]}</span>
+                  </div>
+            )}
+          </div>
+          <div style={{display:'flex',gap:10}}>
+            <button onClick={()=>setStep(1)} style={{flex:1,padding:'12px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'}}>Back</button>
+            <PrimaryBtn onClick={doSend} style={{flex:1}} disabled={loading}>
+              {loading?<span style={{display:'flex',alignItems:'center',gap:8}}><Spinner/>Sending...</span>:'Confirm Send'}
+            </PrimaryBtn>
+          </div>
+        </div>
+      )}
+      {step===3&&(
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:14,textAlign:'center'}}>
+          <div style={{width:64,height:64,background:'#22c55e18',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>Transaction Sent!</div>
+          <div style={{fontSize:13,color:'#8b8fa8',marginBottom:6}}>{amount} {asset.symbol} is on its way</div>
+          <PrimaryBtn onClick={close}>Done</PrimaryBtn>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+
+// ─── RECEIVE MODAL ────────────────────────────────────────────────────────────
+function ReceiveModal({ open, onClose }) {
+  const [asset, setAsset] = React.useState(ASSETS[0]);
+  const [copied, setCopied] = React.useState(false);
+
+  function copy() {
+    try { navigator.clipboard.writeText(WALLET_ADDRESS); } catch(e){}
+    setCopied(true); setTimeout(()=>setCopied(false),2000);
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Receive Crypto">
+      <div style={{display:'flex',flexDirection:'column',gap:18}}>
+        <div style={{display:'flex',gap:8}}>
+          {ASSETS.slice(0,4).map(a=>(
+            <button key={a.id} onClick={()=>setAsset(a)}
+              style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3,padding:'8px 4px',borderRadius:10,cursor:'pointer',transition:'all .15s',
+                background:asset.id===a.id?`${a.color}22`:'#12141a',border:`1px solid ${asset.id===a.id?a.color+'66':'#2a2d3e'}`,
+                color:asset.id===a.id?a.color:'#8b8fa8',fontSize:12,fontWeight:600}}>
+              <span style={{fontSize:16}}>{a.icon}</span>{a.symbol}
+            </button>
+          ))}
+        </div>
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12}}>
+          <div style={{padding:14,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,.4)'}}>
+            <QRPlaceholder value={WALLET_ADDRESS+asset.symbol}/>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#8b8fa8',background:'#12141a',border:'1px solid #2a2d3e',padding:'4px 12px',borderRadius:20}}>
+            <span style={{color:asset.color}}>●</span>{asset.name} Network
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:11,fontWeight:600,color:'#8b8fa8',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8}}>{asset.symbol} Address</div>
+          <div style={{display:'flex',alignItems:'center',gap:10,padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10}}>
+            <span style={{flex:1,fontSize:10,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.5}}>{WALLET_ADDRESS}</span>
+            <button onClick={copy} style={{display:'flex',alignItems:'center',gap:5,background:'#22263a',border:'1px solid #2a2d3e',borderRadius:8,color:copied?'#22c55e':'#8b8fa8',padding:'7px 11px',cursor:'pointer',fontSize:11,fontWeight:600,flexShrink:0,whiteSpace:'nowrap'}}>
+              {copied?<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>:<CopyIco/>}
+              {copied?'Copied!':'Copy'}
+            </button>
+          </div>
+        </div>
+        <div style={{display:'flex',alignItems:'flex-start',gap:8,padding:'10px 12px',background:'#f59e0b18',border:'1px solid #f59e0b33',borderRadius:10,fontSize:11,color:'#f59e0b',lineHeight:1.5}}>
+          <span style={{width:17,height:17,background:'#f59e0b',color:'#000',borderRadius:'50%',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:900,flexShrink:0,marginTop:1}}>!</span>
+          Only send {asset.symbol} to this address. Sending other assets may result in permanent loss.
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function QRPlaceholder({ value }) {
+  const cells = 21, sz = 160, cs = sz/cells;
+  const grid = Array.from({length:cells},(_,r)=>Array.from({length:cells},(_,c)=>{
+    if((r<7&&c<7)||(r<7&&c>=cells-7)||(r>=cells-7&&c<7)){
+      const fr=r<7?r:r-(cells-7), fc=c<7?c:c-(cells-7);
+      if(fr===0||fr===6||fc===0||fc===6)return 1;
+      if(fr>=2&&fr<=4&&fc>=2&&fc<=4)return 1;
+      return 0;
+    }
+    if(r===6||c===6)return(r+c)%2===0?1:0;
+    return(r*cells+c+value.charCodeAt((r*cells+c)%value.length))%3===0?1:0;
+  }));
+  return(
+    <svg width={sz} height={sz} viewBox={`0 0 ${sz} ${sz}`} style={{borderRadius:6}}>
+      <rect width={sz} height={sz} fill="white" rx="6"/>
+      {grid.flatMap((row,r)=>row.map((v,c)=>v?
+        <rect key={`${r}-${c}`} x={c*cs+.5} y={r*cs+.5} width={cs-1} height={cs-1} fill="#0a0b0f" rx={.5}/>:null
+      ))}
+    </svg>
+  );
+}
+
+
+// ─── INSCRIPTIONS DATA ───────────────────────────────────────────────────────
+const INSCRIPTIONS = [
+  { id:1, inscriptionNumber:58291042, type:'image/svg+xml', title:'Genesis Glyph #001', description:'A generative on-chain glyph permanently etched into the Bitcoin blockchain.', content:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#0a0b0f"/><circle cx="100" cy="100" r="70" fill="none" stroke="#6c63ff" stroke-width="2"/><circle cx="100" cy="100" r="50" fill="none" stroke="#a09aff" stroke-width="1.5"/><circle cx="100" cy="100" r="30" fill="rgba(108,99,255,0.15)"/><polygon points="100,40 140,120 60,120" fill="none" stroke="#6c63ff" stroke-width="1.5"/><circle cx="100" cy="100" r="6" fill="#6c63ff"/></svg>', inscribedBy:'bc1qxy2kgdygjrsqtzq2n0yrf249...3eam', txId:'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2', blockHeight:832401, date:'2026-02-14T11:30:00', fileSize:'2.1 KB' },
+  { id:2, inscriptionNumber:58291109, type:'text/plain', title:"Satoshi's Manifesto Fragment", description:'A tribute to the cypherpunk ethos — forever immutable on-chain.', content:"The root problem with conventional currency is all the trust that's required to make it work. The central bank must be trusted not to debase the currency, but the history of fiat currencies is full of breaches of that trust.\n\n— Satoshi Nakamoto, 2009", inscribedBy:'bc1pqyqs7ekdnn4xn4v58vw9...f3kz', txId:'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3', blockHeight:832450, date:'2026-02-15T08:12:00', fileSize:'312 B' },
+  { id:3, inscriptionNumber:58293771, type:'image/svg+xml', title:'Neon Cypher Cat', description:'Pixel art tribute to the crypto cats era, inscribed for eternity.', content:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#0d0d1a"/><rect x="60" y="60" width="80" height="80" rx="20" fill="#1a1d40"/><circle cx="82" cy="88" r="10" fill="#22c55e"/><circle cx="118" cy="88" r="10" fill="#22c55e"/><circle cx="82" cy="88" r="5" fill="#0a0b0f"/><circle cx="118" cy="88" r="5" fill="#0a0b0f"/><path d="M85 115 Q100 125 115 115" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round"/><line x1="60" y1="100" x2="30" y2="90" stroke="#9945ff" stroke-width="2"/><line x1="60" y1="106" x2="28" y2="106" stroke="#9945ff" stroke-width="2"/><line x1="140" y1="100" x2="170" y2="90" stroke="#9945ff" stroke-width="2"/><polygon points="65,65 75,40 85,65" fill="#1a1d40" stroke="#6c63ff" stroke-width="1.5"/><polygon points="115,65 125,40 135,65" fill="#1a1d40" stroke="#6c63ff" stroke-width="1.5"/></svg>', inscribedBy:'bc1p5d7rjq7gpdp6z8g...ql9c', txId:'c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4', blockHeight:832889, date:'2026-02-20T14:55:00', fileSize:'3.4 KB' },
+  { id:4, inscriptionNumber:58301204, type:'text/plain', title:'Block 0 Epitaph', description:'The original genesis block coinbase message, reborn as an inscription.', content:'The Times 03/Jan/2009 Chancellor on brink of second bailout for banks', inscribedBy:'bc1qar0srrr7xfkvy5l643lydnw9re59g...ql', txId:'d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5', blockHeight:833002, date:'2026-02-22T19:03:00', fileSize:'74 B' },
+  { id:5, inscriptionNumber:58312050, type:'image/svg+xml', title:'Ordinal Bloom', description:'Abstract generative bloom art — every petal a unique hash-derived coordinate.', content:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#080a10"/><g transform="translate(100,100)"><ellipse cx="55" cy="0" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(0)"/><ellipse cx="39" cy="39" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(45)"/><ellipse cx="0" cy="55" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(90)"/><ellipse cx="-39" cy="39" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(135)"/><ellipse cx="-55" cy="0" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(180)"/><ellipse cx="-39" cy="-39" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(225)"/><ellipse cx="0" cy="-55" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(270)"/><ellipse cx="39" cy="-39" rx="28" ry="14" fill="rgba(108,99,255,0.25)" stroke="#6c63ff" stroke-width="1" transform="rotate(315)"/><circle cx="0" cy="0" r="18" fill="#1a1d26" stroke="#a09aff" stroke-width="1.5"/><circle cx="0" cy="0" r="8" fill="#6c63ff"/></g></svg>', inscribedBy:'bc1pmfyza7cxnm9w...2qp8', txId:'e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6', blockHeight:833541, date:'2026-02-28T09:20:00', fileSize:'1.8 KB' },
+  { id:6, inscriptionNumber:58324417, type:'text/plain', title:'Proof of Haiku', description:'A haiku mined into block space as cultural proof of work.', content:'Blocks fall like snowflakes\nEach hash a unique crystal\nChain holds them all safe', inscribedBy:'bc1qd2ku5a8...nn3q', txId:'f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1', blockHeight:834100, date:'2026-03-05T07:45:00', fileSize:'58 B' },
+  { id:7, inscriptionNumber:58339820, type:'image/svg+xml', title:'Void Grid #7', description:'Minimalist grid art celebrating the 21 million supply cap.', content:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#0a0b0f"/><rect x="26" y="26" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="51" y="26" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="76" y="26" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="101" y="26" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="126" y="26" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="151" y="26" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="26" y="51" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="51" y="51" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="76" y="51" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="101" y="51" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="126" y="51" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="151" y="51" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="26" y="76" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="51" y="76" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="76" y="76" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="101" y="76" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/><rect x="126" y="76" width="16" height="16" rx="3" fill="#6c63ff"/><rect x="151" y="76" width="16" height="16" rx="3" fill="rgba(108,99,255,0.12)"/></svg>', inscribedBy:'bc1pjn4xuvd3w...7tq5', txId:'a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3', blockHeight:834788, date:'2026-03-10T16:22:00', fileSize:'1.2 KB' },
+  { id:8, inscriptionNumber:58341003, type:'text/plain', title:'HODL Oath', description:'A community-submitted oath of HODLing, etched in sats forever.', content:'I solemnly swear to HODL through the fear, through the greed, through the dips and the rips. Not your keys, not your coins. My keys, my coins. Forever on-chain.', inscribedBy:'bc1q9vd6kp...h7rw', txId:'b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4', blockHeight:834821, date:'2026-03-11T12:00:00', fileSize:'196 B' },
+];
+
+// ─── GALLERY PAGE ─────────────────────────────────────────────────────────────
+function GalleryPage() {
+  const [filter, setFilter] = React.useState('All');
+  const [selected, setSelected] = React.useState(null);
+  const filtered = INSCRIPTIONS.filter(ins =>
+    filter === 'Images' ? ins.type.startsWith('image/') :
+    filter === 'Text'   ? ins.type.startsWith('text/')  : true
+  );
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:12}}>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:'#f0f2ff'}}>Graffiti Gallery</div>
+          <div style={{fontSize:12,color:'#555874',marginTop:3}}>{INSCRIPTIONS.length} inscriptions permanently etched onto the Bitcoin blockchain</div>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          {['All','Images','Text'].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{padding:'6px 14px',borderRadius:8,border:'1px solid',fontSize:12,fontWeight:500,cursor:'pointer',
+                borderColor:filter===f?'rgba(108,99,255,.4)':'#2a2d3e',
+                background:filter===f?'rgba(108,99,255,.18)':'transparent',
+                color:filter===f?'#a09aff':'#8b8fa8'}}>{f}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:14}}>
+        {filtered.map(ins=>(
+          <div key={ins.id} onClick={()=>setSelected(ins)}
+            style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'}}>
+            <div style={{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden'}}>
+              {ins.type==='image/svg+xml'
+                ? <div style={{width:'100%',height:'100%'}} dangerouslySetInnerHTML={{__html:ins.content}}/>
+                : <div style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',gap:8}}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" strokeWidth="1.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span style={{fontSize:11,color:'#8b8fa8',textAlign:'center',fontStyle:'italic',lineHeight:1.5}}>{ins.content.slice(0,70)}…</span>
+                  </div>
+              }
+            </div>
+            <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:5}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{ins.inscriptionNumber.toLocaleString()}</span>
+                <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
+                  background:ins.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
+                  color:ins.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
+                  {ins.type.startsWith('image/')?'Image':'Text'}
+                </span>
+              </div>
+              <div style={{fontSize:13,fontWeight:700,color:'#f0f2ff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{ins.title}</div>
+              <div style={{fontSize:11,color:'#555874',lineHeight:1.5,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{ins.description}</div>
+              <div style={{display:'flex',justifyContent:'space-between',marginTop:2}}>
+                <span style={{fontSize:10,color:'#555874'}}>Block {ins.blockHeight.toLocaleString()}</span>
+                <span style={{fontSize:10,color:'#555874'}}>{ins.fileSize}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {selected&&(
+        <div onClick={()=>setSelected(null)}
+          style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()}
+            style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:18,width:'100%',maxWidth:800,maxHeight:'90vh',overflow:'auto',position:'relative',display:'flex'}}>
+            <button onClick={()=>setSelected(null)} style={{position:'absolute',top:12,right:12,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:1}}>
+              <CloseIco/>
+            </button>
+            <div style={{width:300,minWidth:300,background:'#0a0b0f',borderRight:'1px solid #2a2d3e',display:'flex',alignItems:'center',justifyContent:'center',padding:16,minHeight:300}}>
+              {selected.type==='image/svg+xml'
+                ? <div dangerouslySetInnerHTML={{__html:selected.content}}/>
+                : <pre style={{fontSize:12,color:'#8b8fa8',lineHeight:1.7,whiteSpace:'pre-wrap',fontFamily:'monospace',margin:0}}>{selected.content}</pre>
+              }
+            </div>
+            <div style={{flex:1,padding:'28px 22px 22px',display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{selected.inscriptionNumber.toLocaleString()}</span>
+                <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
+                  background:selected.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
+                  color:selected.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
+                  {selected.type.startsWith('image/')?'Image':'Text'}
+                </span>
+              </div>
+              <div style={{fontSize:17,fontWeight:700,color:'#f0f2ff'}}>{selected.title}</div>
+              <div style={{fontSize:12,color:'#8b8fa8',lineHeight:1.6}}>{selected.description}</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'12px 0',borderTop:'1px solid #2a2d3e',borderBottom:'1px solid #2a2d3e'}}>
+                {[['Block Height',selected.blockHeight.toLocaleString()],['File Size',selected.fileSize],['Date',fDate(selected.date)],['Type',selected.type]].map(([l,v])=>(
+                  <div key={l}><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:2}}>{l}</div><div style={{fontSize:12,color:'#f0f2ff'}}>{v}</div></div>
+                ))}
+              </div>
+              <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Inscribed By</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px'}}>{selected.inscribedBy}</div>
+              </div>
+              <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Transaction ID</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.txId}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── IMPORT WALLET MODAL ─────────────────────────────────────────────────────
+function ImportWalletModal({ open, onClose, onImport }) {
+  const [addr, setAddr]       = React.useState('');
+  const [network, setNetwork] = React.useState('mainnet');
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError]     = React.useState('');
+  const [result, setResult]   = React.useState(null);
+
+  async function handleFetch() {
+    setLoading(true); setError(''); setResult(null);
+    try {
+      const data = await loadBitcoinWallet(addr.trim(), network);
+      setResult(data);
+    } catch(e) {
+      setError(e.message || 'Failed to fetch. If opening as a local file, try serving via a web server or GitHub Pages.');
+    } finally { setLoading(false); }
+  }
+
+  function handleImport() { onImport(result); handleClose(); }
+
+  function handleClose() { setAddr(''); setError(''); setResult(null); onClose(); }
+
+  return (
+    <Modal open={open} onClose={handleClose} title="Import Bitcoin Wallet">
+      <div style={{display:'flex',flexDirection:'column',gap:16}}>
+        <div style={{display:'flex',gap:8,padding:'10px 12px',background:'rgba(108,99,255,.1)',border:'1px solid rgba(108,99,255,.3)',borderRadius:10,fontSize:11,color:'#a09aff',lineHeight:1.6}}>
+          <span style={{flexShrink:0}}>🔒</span>
+          <span>Read-only import — only your public Bitcoin address is needed. <strong>Never enter your seed phrase or private key into any website.</strong></span>
+        </div>
+        <div>
+          <Label>Network</Label>
+          <div style={{display:'flex',gap:8}}>
+            {['mainnet','testnet'].map(n=>(
+              <button key={n} onClick={()=>{setNetwork(n);setResult(null);setError('');}}
+                style={{flex:1,padding:'9px',borderRadius:10,cursor:'pointer',fontSize:12,fontWeight:600,textTransform:'capitalize',
+                  border:'1px solid',borderColor:network===n?'rgba(108,99,255,.5)':'#2a2d3e',
+                  background:network===n?'rgba(108,99,255,.15)':'#12141a',
+                  color:network===n?'#a09aff':'#8b8fa8'}}>{n}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <Label>Bitcoin Address</Label>
+          <input value={addr} onChange={e=>{setAddr(e.target.value);setResult(null);setError('');}}
+            placeholder={network==='testnet'?'tb1q... or m... or n...':'bc1q... or 1... or 3...'}
+            style={{width:'100%',padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontFamily:'monospace'}}/>
+        </div>
+        {error&&<div style={{fontSize:12,color:'#ef4444',padding:'9px 12px',background:'#ef444415',border:'1px solid #ef444430',borderRadius:8,lineHeight:1.5}}>{error}</div>}
+        {result&&(
+          <div style={{padding:14,background:'#22c55e15',border:'1px solid #22c55e30',borderRadius:10,display:'flex',flexDirection:'column',gap:5}}>
+            <div style={{fontSize:11,color:'#22c55e',fontWeight:700,textTransform:'uppercase',letterSpacing:'.5px'}}>✓ Wallet Found</div>
+            <div style={{fontSize:24,fontWeight:800,color:'#f0f2ff'}}>{result.balance.toFixed(8)} BTC</div>
+            <div style={{fontSize:11,color:'#8b8fa8'}}>{result.txCount} transaction{result.txCount!==1?'s':''} · {result.network}</div>
+          </div>
+        )}
+        {!result
+          ? <PrimaryBtn onClick={handleFetch} disabled={!addr.trim()||loading}>
+              {loading?<span style={{display:'flex',alignItems:'center',gap:8}}><Spinner/>Looking up address…</span>:'Fetch Balance'}
+            </PrimaryBtn>
+          : <PrimaryBtn onClick={handleImport}>Import Wallet</PrimaryBtn>
+        }
+      </div>
+    </Modal>
+  );
+}
+
+// ─── SIDEBAR ─────────────────────────────────────────────────────────────────
+const NAV = [
+  {id:'dashboard',label:'Dashboard',icon:DashIco},
+  {id:'assets',   label:'Assets',   icon:AssetsIco},
+  {id:'history',  label:'History',  icon:HistoryIco},
+  {id:'gallery',  label:'Gallery',  icon:GalleryIco},
+  {id:'nfts',     label:'NFTs',     icon:NftIco},
+  {id:'settings', label:'Settings', icon:SettingsIco},
+];
+
+function Sidebar({ active, onNav, importedWallet }) {
+  return (
+    <aside style={{width:220,minWidth:220,background:'#12141a',borderRight:'1px solid #2a2d3e',display:'flex',flexDirection:'column',padding:'22px 12px',gap:6}}>
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'0 8px 18px',borderBottom:'1px solid #2a2d3e',marginBottom:6}}>
+        <div style={{width:36,height:36,background:'rgba(108,99,255,.12)',borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#6c63ff"/>
+            <path d="M2 17l10 5 10-5" stroke="#6c63ff" strokeWidth="2" strokeLinecap="round"/>
+            <path d="M2 12l10 5 10-5" stroke="#a09aff" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <span style={{fontSize:15,fontWeight:700,color:'#f0f2ff',letterSpacing:'-.3px'}}>CryptoVault</span>
+      </div>
+      <nav style={{display:'flex',flexDirection:'column',gap:2,flex:1}}>
+        {NAV.map(({id,label,icon:Icon})=>{
+          const on=active===id;
+          return(
+            <button key={id} onClick={()=>onNav(id)}
+              style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:10,width:'100%',border:'none',cursor:'pointer',position:'relative',
+                background:on?'rgba(108,99,255,.12)':'transparent',transition:'background .15s'}}>
+              <span style={{color:on?'#6c63ff':'#555874',display:'flex'}}><Icon/></span>
+              <span style={{fontSize:13,fontWeight:500,color:on?'#f0f2ff':'#8b8fa8'}}>{label}</span>
+              {on&&<div style={{position:'absolute',right:0,top:'50%',transform:'translateY(-50%)',width:3,height:18,background:'#6c63ff',borderRadius:2}}/>}
+            </button>
+          );
+        })}
+      </nav>
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:12,background:'#1a1d26',borderRadius:12}}>
+        <div style={{width:32,height:32,borderRadius:'50%',background:'linear-gradient(135deg,#6c63ff,#a09aff)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,color:'#fff',flexShrink:0}}>C</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:600,color:'#f0f2ff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>Carol's Wallet</div>
+          <div style={{fontSize:10,color:'#555874',marginTop:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{importedWallet ? importedWallet.address.slice(0,10)+'...'+importedWallet.address.slice(-6) : '0x4a3b...9f2c'}</div>
+        </div>
+        <button style={{background:'transparent',border:'none',color:'#555874',cursor:'pointer',padding:2,display:'flex'}}><CopyIco/></button>
+      </div>
+    </aside>
+  );
+}
+
+
+// ─── APP ─────────────────────────────────────────────────────────────────────
+function App() {
+  const [page, setPage] = React.useState('dashboard');
+  const [sendOpen, setSendOpen]       = React.useState(false);
+  const [recvOpen, setRecvOpen]       = React.useState(false);
+  const [importOpen, setImportOpen]   = React.useState(false);
+  const [importedWallet, setImportedWallet] = React.useState(null);
+
+  const liveAssets = importedWallet
+    ? ASSETS.map(a => a.id==='btc' ? {...a, balance: importedWallet.balance} : a)
+    : ASSETS;
+
+  return (
+    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
+      <Sidebar active={page} onNav={setPage} importedWallet={importedWallet}/>
+      <main style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+        {/* Top bar */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 26px 14px',borderBottom:'1px solid #2a2d3e',background:'#12141a',flexShrink:0}}>
+          <div>
+            <h1 style={{fontSize:21,fontWeight:800,color:'#f0f2ff',letterSpacing:'-.5px'}}>
+              {{dashboard:'Dashboard',assets:'Assets',history:'History',gallery:'Gallery',nfts:'NFTs',settings:'Settings'}[page]}
+            </h1>
+            <div style={{fontSize:11,color:'#555874',marginTop:3}}>
+              {new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
+            </div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:10,padding:'8px 13px'}}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#555874" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input placeholder="Search assets…" style={{background:'transparent',border:'none',color:'#f0f2ff',fontSize:12,width:150}}/>
+            </div>
+            <button style={{position:'relative',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:10,color:'#8b8fa8',width:38,height:38,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+              <span style={{position:'absolute',top:8,right:8,width:7,height:7,background:'#6c63ff',borderRadius:'50%',border:'1.5px solid #12141a'}}/>
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{flex:1,overflow:'auto',padding:'18px 26px 26px'}}>
+          {page==='dashboard'&&(
+            <div style={{display:'flex',gap:18,height:'100%'}}>
+              <div style={{flex:1,display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
+                <PortfolioCard assets={liveAssets} onSend={()=>setSendOpen(true)} onReceive={()=>setRecvOpen(true)} onImport={()=>setImportOpen(true)} importedWallet={importedWallet}/>
+                <StatsBar assets={liveAssets}/>
+                <AssetList assets={liveAssets}/>
+              </div>
+              <div style={{width:370,flexShrink:0}}><TxHistory txs={importedWallet?.txs}/></div>
+            </div>
+          )}
+          {page==='assets'&&(
+            <div style={{display:'flex',flexDirection:'column',gap:14}}>
+              <StatsBar assets={liveAssets}/>
+              <AssetList assets={liveAssets}/>
+            </div>
+          )}
+          {page==='history'&&<TxHistory txs={importedWallet?.txs}/>}
+          {page==='gallery'&&<GalleryPage/>}
+          {page==='nfts'&&<Placeholder title="NFT Collection" sub="Your NFTs will appear here." icon="🖼"/>}
+          {page==='settings'&&<Placeholder title="Settings" sub="Wallet settings and preferences." icon="⚙"/>}
+        </div>
+      </main>
+
+      <SendModal open={sendOpen} onClose={()=>setSendOpen(false)}/>
+      <ReceiveModal open={recvOpen} onClose={()=>setRecvOpen(false)}/>
+      <ImportWalletModal open={importOpen} onClose={()=>setImportOpen(false)} onImport={setImportedWallet}/>
+    </div>
+  );
+}
+
+function Placeholder({ title, sub, icon }) {
+  return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'60vh',gap:12}}>
+      <div style={{fontSize:52,marginBottom:8}}>{icon}</div>
+      <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>{title}</div>
+      <div style={{fontSize:13,color:'#555874'}}>{sub}</div>
+    </div>
+  );
+}
+
+
+// ─── HELPERS & ICONS ─────────────────────────────────────────────────────────
+function Label({ children }) {
+  return <label style={{display:'block',fontSize:11,fontWeight:600,color:'#8b8fa8',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'}}>{children}</label>;
+}
+function PrimaryBtn({ children, onClick, disabled, style={} }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{width:'100%',padding:'13px',background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:disabled?'not-allowed':'pointer',opacity:disabled?0.4:1,display:'flex',alignItems:'center',justifyContent:'center',...style}}>
+      {children}
+    </button>
+  );
+}
+function Coin({ a, sz=36 }) {
+  return <div style={{width:sz,height:sz,borderRadius:'50%',background:`${a.color}22`,border:`1.5px solid ${a.color}44`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:sz*0.42,fontWeight:700,color:a.color,flexShrink:0}}>{a.icon}</div>;
+}
+function Spinner() {
+  return <div style={{width:14,height:14,border:'2px solid rgba(255,255,255,.3)',borderTopColor:'#fff',borderRadius:'50%',animation:'spin .8s linear infinite'}}/>;
+}
+function GalleryIco() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>; }
+function ImportIco()  { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>; }
+function DashIco()    { return <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>; }
+function AssetsIco()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg>; }
+function HistoryIco() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>; }
+function NftIco()     { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg>; }
+function SettingsIco(){ return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>; }
+function CopyIco()    { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>; }
+function CloseIco()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>; }
+function SendIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>; }
+function RecvIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/></svg>; }
+function SwapIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>; }
+function BuyIco()     { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>; }
+function ArrowDwnIco({color}){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>; }
+function ArrowUpIco( {color}){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>; }
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
