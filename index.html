@@ -73,8 +73,8 @@ const TRANSACTIONS = [
 const WALLET_ADDRESS = '0x4a3b8c2d1e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b';
 
 async function loadBitcoinWallet(address, network) {
-  const base = network === 'testnet'
-    ? 'https://blockstream.info/testnet/api'
+  const base = network === 'testnet4'
+    ? 'https://mempool.space/testnet4/api'
     : 'https://blockstream.info/api';
   const addrRes = await fetch(`${base}/address/${address}`);
   if (!addrRes.ok) throw new Error('Address not found. Check the address and selected network.');
@@ -725,7 +725,7 @@ function GalleryPage() {
 // ─── IMPORT WALLET MODAL ─────────────────────────────────────────────────────
 function ImportWalletModal({ open, onClose, onImport }) {
   const [addr, setAddr]       = React.useState('');
-  const [network, setNetwork] = React.useState('mainnet');
+  const [network, setNetwork] = React.useState('testnet4');
   const [loading, setLoading] = React.useState(false);
   const [error, setError]     = React.useState('');
   const [result, setResult]   = React.useState(null);
@@ -754,7 +754,7 @@ function ImportWalletModal({ open, onClose, onImport }) {
         <div>
           <Label>Network</Label>
           <div style={{display:'flex',gap:8}}>
-            {['mainnet','testnet'].map(n=>(
+            {['mainnet','testnet4'].map(n=>(
               <button key={n} onClick={()=>{setNetwork(n);setResult(null);setError('');}}
                 style={{flex:1,padding:'9px',borderRadius:10,cursor:'pointer',fontSize:12,fontWeight:600,textTransform:'capitalize',
                   border:'1px solid',borderColor:network===n?'rgba(108,99,255,.5)':'#2a2d3e',
@@ -766,7 +766,7 @@ function ImportWalletModal({ open, onClose, onImport }) {
         <div>
           <Label>Bitcoin Address</Label>
           <input value={addr} onChange={e=>{setAddr(e.target.value);setResult(null);setError('');}}
-            placeholder={network==='testnet'?'tb1q... or m... or n...':'bc1q... or 1... or 3...'}
+            placeholder={network==='testnet4'?'tb1q...':'bc1q... or 1... or 3...'}
             style={{width:'100%',padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontFamily:'monospace'}}/>
         </div>
         {error&&<div style={{fontSize:12,color:'#ef4444',padding:'9px 12px',background:'#ef444415',border:'1px solid #ef444430',borderRadius:8,lineHeight:1.5}}>{error}</div>}
@@ -787,6 +787,54 @@ function ImportWalletModal({ open, onClose, onImport }) {
     </Modal>
   );
 }
+
+// ─── SETTINGS PAGE ───────────────────────────────────────────────────────────
+function SettingsPage({ importedWallet, onImport, onRemove }) {
+  return (
+    <div style={{maxWidth:560}}>
+      <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,padding:24,display:'flex',flexDirection:'column',gap:18}}>
+        <div style={{display:'flex',alignItems:'center',gap:14}}>
+          <div style={{width:40,height:40,borderRadius:10,background:'#f7931a18',border:'1px solid #f7931a33',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f7931a" strokeWidth="2" strokeLinecap="round"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+          </div>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Bitcoin Wallet</div>
+            <div style={{fontSize:12,color:'#555874',marginTop:2}}>Import a Bitcoin address to track live balance</div>
+          </div>
+        </div>
+        {importedWallet ? (
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{padding:'14px 16px',background:'#12141a',border:'1px solid #22c55e33',borderRadius:10,display:'flex',flexDirection:'column',gap:6}}>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{color:'#22c55e',fontSize:10}}>●</span>
+                <span style={{fontSize:11,fontWeight:700,color:'#22c55e',textTransform:'uppercase',letterSpacing:'.5px'}}>Tracking — {importedWallet.network}</span>
+              </div>
+              <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all'}}>{importedWallet.address}</div>
+              <div style={{fontSize:20,fontWeight:800,color:'#f0f2ff',marginTop:4}}>{importedWallet.balance.toFixed(8)} BTC</div>
+              <div style={{fontSize:11,color:'#555874'}}>{importedWallet.txCount} transaction{importedWallet.txCount!==1?'s':''}</div>
+            </div>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={onImport}
+                style={{flex:1,padding:'10px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+                Re-import / Update
+              </button>
+              <button onClick={onRemove}
+                style={{padding:'10px 20px',background:'transparent',border:'1px solid #ef444433',borderRadius:10,color:'#ef4444',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+                Remove
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={onImport}
+            style={{padding:'12px',background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+            Import Bitcoin Address
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 const NAV = [
@@ -844,7 +892,18 @@ function App() {
   const [sendOpen, setSendOpen]       = React.useState(false);
   const [recvOpen, setRecvOpen]       = React.useState(false);
   const [importOpen, setImportOpen]   = React.useState(false);
-  const [importedWallet, setImportedWallet] = React.useState(null);
+  const [importedWallet, setImportedWallet] = React.useState(() => {
+    try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
+  });
+
+  function handleImportWallet(wallet) {
+    localStorage.setItem('importedWallet', JSON.stringify(wallet));
+    setImportedWallet(wallet);
+  }
+  function handleRemoveWallet() {
+    localStorage.removeItem('importedWallet');
+    setImportedWallet(null);
+  }
 
   const liveAssets = importedWallet
     ? ASSETS.map(a => a.id==='btc' ? {...a, balance: importedWallet.balance} : a)
@@ -897,13 +956,13 @@ function App() {
           {page==='history'&&<TxHistory txs={importedWallet?.txs}/>}
           {page==='gallery'&&<GalleryPage/>}
           {page==='nfts'&&<Placeholder title="NFT Collection" sub="Your NFTs will appear here." icon="🖼"/>}
-          {page==='settings'&&<Placeholder title="Settings" sub="Wallet settings and preferences." icon="⚙"/>}
+          {page==='settings'&&<SettingsPage importedWallet={importedWallet} onImport={()=>setImportOpen(true)} onRemove={handleRemoveWallet}/>}
         </div>
       </main>
 
       <SendModal open={sendOpen} onClose={()=>setSendOpen(false)}/>
       <ReceiveModal open={recvOpen} onClose={()=>setRecvOpen(false)}/>
-      <ImportWalletModal open={importOpen} onClose={()=>setImportOpen(false)} onImport={setImportedWallet}/>
+      <ImportWalletModal open={importOpen} onClose={()=>setImportOpen(false)} onImport={handleImportWallet}/>
     </div>
   );
 }
