@@ -9,6 +9,19 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Load Bitcoin signing library before DOMContentLoaded so it's ready for the app -->
+  <script type="module">
+    try {
+      const [btcMod, curvesMod, bip32Mod] = await Promise.all([
+        import('https://esm.sh/@scure/btc-signer'),
+        import('https://esm.sh/@noble/curves/secp256k1'),
+        import('https://esm.sh/@scure/bip32'),
+      ]);
+      window._btc = { btc: btcMod, secp256k1: curvesMod.secp256k1, HDKey: bip32Mod.HDKey };
+    } catch(e) {
+      console.warn('Bitcoin library load error:', e.message);
+    }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -112,6 +125,69 @@ function fDate(iso) {
   return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' · ' + d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
 }
 function portfolioTotal(assets) { return assets.reduce((s,a)=>s+a.price*a.balance,0); }
+
+
+// ─── BITCOIN SEND UTILITIES ───────────────────────────────────────────────────
+const BTC_API = 'https://mempool.space/testnet4/api';
+const TESTNET_BIP32 = { private: 0x04358394, public: 0x043587CF };
+const BIP84_PATH = "m/84'/1'/0'/0/0";
+
+function btcPrivKeyToAddress(privKey) {
+  const pubKey = window._btc.secp256k1.getPublicKey(privKey, true);
+  return window._btc.btc.p2wpkh(pubKey, window._btc.btc.TEST_NETWORK).address;
+}
+function btcTprvToPrivKey(tprv) {
+  if (!window._btc) throw new Error('Bitcoin library not loaded yet. Please wait and retry.');
+  const hdKey = window._btc.HDKey.fromExtendedKey(tprv, TESTNET_BIP32);
+  const child = hdKey.derive(BIP84_PATH);
+  if (!child.privateKey) throw new Error('Could not derive private key from TPRV');
+  return child.privateKey;
+}
+function btcTprvToAddress(tprv) {
+  return btcPrivKeyToAddress(btcTprvToPrivKey(tprv));
+}
+function btcGenerateWallet() {
+  if (!window._btc) throw new Error('Bitcoin library not loaded yet.');
+  const seed = crypto.getRandomValues(new Uint8Array(64));
+  const hdKey = window._btc.HDKey.fromMasterSeed(seed, TESTNET_BIP32);
+  const tprv = hdKey.privateExtendedKey;
+  return { tprv, address: btcTprvToAddress(tprv) };
+}
+async function btcEstimateFee() {
+  try {
+    const r = await fetch(`${BTC_API}/v1/fees/recommended`);
+    const d = await r.json();
+    const feeRate = Math.max(d.halfHourFee || 2, 1);
+    return { feeRate, feeSats: Math.ceil(150 * feeRate) };
+  } catch { return { feeRate: 2, feeSats: 300 }; }
+}
+async function btcSend({ tprv, fromAddress, toAddress, amountSats }) {
+  if (!window._btc) throw new Error('Bitcoin library not loaded. Please refresh.');
+  const { btc, secp256k1 } = window._btc;
+  const privKey = btcTprvToPrivKey(tprv);
+  const pubKey = secp256k1.getPublicKey(privKey, true);
+  const myScript = btc.p2wpkh(pubKey, btc.TEST_NETWORK);
+  if (myScript.address !== fromAddress) throw new Error('TPRV key does not match wallet address');
+  const utxoRes = await fetch(`${BTC_API}/address/${fromAddress}/utxo`);
+  if (!utxoRes.ok) throw new Error('Failed to fetch UTXOs');
+  const utxos = await utxoRes.json();
+  if (!utxos.length) throw new Error('No unspent outputs found for this address');
+  const { feeSats } = await btcEstimateFee();
+  const sorted = [...utxos].sort((a, b) => b.value - a.value);
+  let totalIn = 0; const selected = [];
+  for (const u of sorted) { selected.push(u); totalIn += u.value; if (totalIn >= amountSats + feeSats) break; }
+  if (totalIn < amountSats + feeSats)
+    throw new Error(`Insufficient balance: need ${(amountSats+feeSats).toLocaleString()} sats, have ${totalIn.toLocaleString()} sats`);
+  const tx = new btc.Transaction();
+  for (const u of selected) tx.addInput({ txid:u.txid, index:u.vout, witnessUtxo:{ script:myScript.script, amount:BigInt(u.value) } });
+  tx.addOutputAddress(toAddress, BigInt(amountSats), btc.TEST_NETWORK);
+  const change = totalIn - amountSats - feeSats;
+  if (change > 546) tx.addOutput({ script:myScript.script, amount:BigInt(change) });
+  tx.sign(privKey); tx.finalize();
+  const bRes = await fetch(`${BTC_API}/tx`, { method:'POST', headers:{'Content-Type':'text/plain'}, body:tx.hex });
+  if (!bRes.ok) throw new Error(`Broadcast failed: ${await bRes.text()}`);
+  return (await bRes.text()).trim();
+}
 
 
 // ─── SPARKLINE ───────────────────────────────────────────────────────────────
@@ -427,31 +503,58 @@ function Modal({ open, onClose, title, children }) {
 
 
 // ─── SEND MODAL ───────────────────────────────────────────────────────────────
-function SendModal({ open, onClose }) {
+function SendModal({ open, onClose, btcAddress, btcTprv, onBalanceUpdate }) {
   const [step, setStep] = React.useState(1);
   const [asset, setAsset] = React.useState(ASSETS[0]);
   const [to, setTo] = React.useState('');
   const [amount, setAmount] = React.useState('');
   const [dropdown, setDropdown] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [txid, setTxid] = React.useState('');
+  const [feeInfo, setFeeInfo] = React.useState(null);
 
+  const isBtc = asset.id === 'btc';
+  const hasTprv = isBtc && !!btcTprv;
   const num = parseFloat(amount)||0;
-  const usd = num*asset.price;
-  const valid = to.length>10 && num>0 && num<=asset.balance;
+  const amountSats = Math.round(num * 1e8);
+  const usd = num * asset.price;
+  const feeSats = feeInfo?.feeSats || 300;
+  const valid = to.length > 10 && num > 0 && num <= asset.balance && (!isBtc || hasTprv);
 
-  function reset() { setStep(1);setTo('');setAmount('');setLoading(false); }
+  React.useEffect(() => {
+    if (!isBtc) { setFeeInfo(null); return; }
+    btcEstimateFee().then(setFeeInfo).catch(()=>{});
+  }, [isBtc]);
+
+  function handleMax() {
+    if (isBtc && feeInfo) {
+      const maxSats = Math.max(0, Math.round(asset.balance * 1e8) - feeSats);
+      setAmount((maxSats / 1e8).toFixed(8));
+    } else { setAmount(String(asset.balance)); }
+  }
+
+  function reset() { setStep(1);setTo('');setAmount('');setLoading(false);setError('');setTxid(''); }
   function close() { reset();onClose(); }
 
-  function doSend() {
-    setLoading(true);
-    setTimeout(()=>{ setLoading(false);setStep(3); },2000);
+  async function doSend() {
+    setLoading(true); setError('');
+    if (isBtc && hasTprv && btcAddress) {
+      try {
+        const id = await btcSend({ tprv:btcTprv, fromAddress:btcAddress, toAddress:to, amountSats });
+        setTxid(id); setStep(3);
+        if (onBalanceUpdate) setTimeout(onBalanceUpdate, 4000);
+      } catch(e) { setError(e.message); }
+    } else {
+      setTimeout(()=>{ setStep(3); }, 2000);
+    }
+    setLoading(false);
   }
 
   return (
     <Modal open={open} onClose={close} title="Send Crypto">
       {step===1&&(
         <div style={{display:'flex',flexDirection:'column',gap:18}}>
-          {/* Asset picker */}
           <div>
             <Label>Asset</Label>
             <div style={{position:'relative'}}>
@@ -475,17 +578,23 @@ function SendModal({ open, onClose }) {
               )}
             </div>
           </div>
-          {/* To */}
+
+          {isBtc && !hasTprv && (
+            <div style={{display:'flex',alignItems:'flex-start',gap:8,padding:'10px 12px',background:'#f59e0b18',border:'1px solid #f59e0b33',borderRadius:10}}>
+              <span style={{fontSize:13}}>⚠️</span>
+              <span style={{fontSize:12,color:'#f59e0b',lineHeight:1.4}}>No signing key configured. Go to <strong>Settings</strong> to import a TPRV key or generate a testnet4 wallet.</span>
+            </div>
+          )}
+
           <div>
             <Label>Recipient Address</Label>
-            <input value={to} onChange={e=>setTo(e.target.value)} placeholder="0x... or ENS name"
+            <input value={to} onChange={e=>setTo(e.target.value)} placeholder={isBtc?'tb1q...':'0x... or ENS name'}
               style={{width:'100%',padding:'11px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:14}}/>
           </div>
-          {/* Amount */}
           <div>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
               <Label style={{}}>Amount</Label>
-              <button onClick={()=>setAmount(String(asset.balance))} style={{background:'rgba(108,99,255,.15)',border:'none',color:'#6c63ff',fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:5,cursor:'pointer',letterSpacing:'.5px'}}>MAX</button>
+              <button onClick={handleMax} style={{background:'rgba(108,99,255,.15)',border:'none',color:'#6c63ff',fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:5,cursor:'pointer',letterSpacing:'.5px'}}>MAX</button>
             </div>
             <div style={{display:'flex',alignItems:'center',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,overflow:'hidden'}}>
               <input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00" type="number"
@@ -496,27 +605,39 @@ function SendModal({ open, onClose }) {
             {num>asset.balance&&<div style={{marginTop:5,fontSize:11,color:'#ef4444'}}>Insufficient balance</div>}
           </div>
           <div style={{display:'flex',justifyContent:'space-between',padding:'9px 12px',background:'#12141a',borderRadius:8,fontSize:13}}>
-            <span style={{color:'#555874'}}>Estimated fee</span><span style={{color:'#8b8fa8',fontWeight:500}}>~$2.40</span>
+            <span style={{color:'#555874'}}>Estimated fee</span>
+            <span style={{color:'#8b8fa8',fontWeight:500}}>
+              {isBtc && feeInfo ? `~${feeInfo.feeSats.toLocaleString()} sats (${feeInfo.feeRate} sat/vB)` : '~$2.40'}
+            </span>
           </div>
           <PrimaryBtn disabled={!valid} onClick={()=>setStep(2)}>Review Transaction</PrimaryBtn>
         </div>
       )}
       {step===2&&(
-        <div style={{display:'flex',flexDirection:'column',gap:18}}>
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          {isBtc && hasTprv && (
+            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'6px 12px',background:'#22c55e12',border:'1px solid #22c55e33',borderRadius:8}}>
+              <span style={{color:'#22c55e',fontSize:9}}>●</span>
+              <span style={{fontSize:11,color:'#22c55e',fontWeight:600,letterSpacing:'.5px'}}>LIVE TESTNET4 TRANSACTION</span>
+            </div>
+          )}
           <div style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:11}}>
-            {[['Sending',`${amount} ${asset.symbol}`],['USD Value',fUSD(usd)],null,['To',to],['Network',asset.name],['Fee','~$2.40']].map((r,i)=>
+            {[['Sending',`${amount} ${asset.symbol}`],['USD Value',fUSD(usd)],null,
+              ['To',to],['Network',isBtc?'Bitcoin Testnet4':asset.name],
+              ['Fee',isBtc&&feeInfo?`~${feeInfo.feeSats.toLocaleString()} sats`:'~$2.40']].map((r,i)=>
               r===null
                 ? <div key={i} style={{height:1,background:'#2a2d3e'}}/>
-                : <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <span style={{fontSize:12,color:'#555874'}}>{r[0]}</span>
-                    <span style={{fontSize:13,color:'#f0f2ff',fontWeight:500,fontFamily:r[0]==='To'?'monospace':undefined,fontSize:r[0]==='To'?11:13}}>{r[1]}</span>
+                : <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+                    <span style={{fontSize:12,color:'#555874',flexShrink:0}}>{r[0]}</span>
+                    <span style={{fontSize:r[0]==='To'?11:13,color:'#f0f2ff',fontWeight:500,fontFamily:r[0]==='To'?'monospace':undefined,wordBreak:'break-all',textAlign:'right'}}>{r[1]}</span>
                   </div>
             )}
           </div>
+          {error&&<div style={{padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444'}}>❌ {error}</div>}
           <div style={{display:'flex',gap:10}}>
-            <button onClick={()=>setStep(1)} style={{flex:1,padding:'12px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'}}>Back</button>
+            <button onClick={()=>{setStep(1);setError('');}} style={{flex:1,padding:'12px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'}}>Back</button>
             <PrimaryBtn onClick={doSend} style={{flex:1}} disabled={loading}>
-              {loading?<span style={{display:'flex',alignItems:'center',gap:8}}><Spinner/>Sending...</span>:'Confirm Send'}
+              {loading?<span style={{display:'flex',alignItems:'center',gap:8}}><Spinner/>Broadcasting...</span>:'Confirm Send'}
             </PrimaryBtn>
           </div>
         </div>
@@ -528,6 +649,16 @@ function SendModal({ open, onClose }) {
           </div>
           <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>Transaction Sent!</div>
           <div style={{fontSize:13,color:'#8b8fa8',marginBottom:6}}>{amount} {asset.symbol} is on its way</div>
+          {txid&&(
+            <div style={{width:'100%',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:'12px 14px',display:'flex',flexDirection:'column',gap:6,textAlign:'left'}}>
+              <div style={{fontSize:11,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px'}}>Transaction ID</div>
+              <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.5}}>{txid}</div>
+              <a href={`https://mempool.space/testnet4/tx/${txid}`} target="_blank" rel="noopener noreferrer"
+                style={{fontSize:12,color:'#6c63ff',fontWeight:600,textDecoration:'none'}}>
+                View on Mempool.space ↗
+              </a>
+            </div>
+          )}
           <PrimaryBtn onClick={close}>Done</PrimaryBtn>
         </div>
       )}
@@ -789,48 +920,121 @@ function ImportWalletModal({ open, onClose, onImport }) {
 }
 
 // ─── SETTINGS PAGE ───────────────────────────────────────────────────────────
-function SettingsPage({ importedWallet, onImport, onRemove }) {
+function SettingsPage({ importedWallet, btcTprv, onImport, onRemove, onImportTprv, onGenerateWallet, onRemoveTprv }) {
+  const [tprvInput, setTprvInput] = React.useState('');
+  const [showTprv, setShowTprv] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [status, setStatus] = React.useState('');
+
+  function flash(msg) { setStatus(msg); setTimeout(()=>setStatus(''), 2500); }
+
+  function handleImportTprv() {
+    const t = tprvInput.trim();
+    if (!t) { setError('Enter a TPRV key first'); return; }
+    if (!t.startsWith('tprv')) { setError('Testnet extended keys start with "tprv"'); return; }
+    try {
+      onImportTprv(t);
+      setTprvInput(''); setError('');
+      flash('Wallet imported! Address auto-derived.');
+    } catch(e) { setError(e.message); }
+  }
+
+  function handleGenerate() {
+    try {
+      const { tprv } = onGenerateWallet();
+      setTprvInput(tprv); setShowTprv(true); setError('');
+      flash('New wallet generated!');
+    } catch(e) { setError(e.message); }
+  }
+
+  const cardStyle = {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,padding:24,display:'flex',flexDirection:'column',gap:16};
+  const hdrStyle  = {display:'flex',alignItems:'center',gap:14};
+  const icoBase   = {width:40,height:40,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0};
+
   return (
-    <div style={{maxWidth:560}}>
-      <div style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:16,padding:24,display:'flex',flexDirection:'column',gap:18}}>
-        <div style={{display:'flex',alignItems:'center',gap:14}}>
-          <div style={{width:40,height:40,borderRadius:10,background:'#f7931a18',border:'1px solid #f7931a33',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+    <div style={{maxWidth:560,display:'flex',flexDirection:'column',gap:16}}>
+      {/* Card 1: Address tracking */}
+      <div style={cardStyle}>
+        <div style={hdrStyle}>
+          <div style={{...icoBase,background:'#f7931a18',border:'1px solid #f7931a33'}}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f7931a" strokeWidth="2" strokeLinecap="round"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
           </div>
           <div>
-            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Bitcoin Wallet</div>
-            <div style={{fontSize:12,color:'#555874',marginTop:2}}>Import a Bitcoin address to track live balance</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Bitcoin Testnet4 Address</div>
+            <div style={{fontSize:12,color:'#555874',marginTop:2}}>Import a public address to track live balance (watch-only)</div>
           </div>
         </div>
         {importedWallet ? (
-          <div style={{display:'flex',flexDirection:'column',gap:12}}>
-            <div style={{padding:'14px 16px',background:'#12141a',border:'1px solid #22c55e33',borderRadius:10,display:'flex',flexDirection:'column',gap:6}}>
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            <div style={{padding:'12px 14px',background:'#12141a',border:'1px solid #22c55e33',borderRadius:10,display:'flex',flexDirection:'column',gap:5}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
                 <span style={{color:'#22c55e',fontSize:10}}>●</span>
-                <span style={{fontSize:11,fontWeight:700,color:'#22c55e',textTransform:'uppercase',letterSpacing:'.5px'}}>Tracking — {importedWallet.network}</span>
+                <span style={{fontSize:11,fontWeight:700,color:'#22c55e',textTransform:'uppercase',letterSpacing:'.5px'}}>{btcTprv?'Signing':'Tracking'} — {importedWallet.network}</span>
               </div>
               <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all'}}>{importedWallet.address}</div>
               <div style={{fontSize:20,fontWeight:800,color:'#f0f2ff',marginTop:4}}>{importedWallet.balance.toFixed(8)} BTC</div>
-              <div style={{fontSize:11,color:'#555874'}}>{importedWallet.txCount} transaction{importedWallet.txCount!==1?'s':''}</div>
             </div>
-            <div style={{display:'flex',gap:10}}>
-              <button onClick={onImport}
-                style={{flex:1,padding:'10px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
-                Re-import / Update
-              </button>
-              <button onClick={onRemove}
-                style={{padding:'10px 20px',background:'transparent',border:'1px solid #ef444433',borderRadius:10,color:'#ef4444',fontSize:13,fontWeight:600,cursor:'pointer'}}>
-                Remove
-              </button>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={onImport} style={{flex:1,padding:'10px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontWeight:600,cursor:'pointer'}}>Re-import</button>
+              <button onClick={onRemove} style={{padding:'10px 16px',background:'transparent',border:'1px solid #ef444433',borderRadius:10,color:'#ef4444',fontSize:13,fontWeight:600,cursor:'pointer'}}>Remove</button>
             </div>
           </div>
         ) : (
-          <button onClick={onImport}
-            style={{padding:'12px',background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+          <button onClick={onImport} style={{padding:'12px',background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
             Import Bitcoin Address
           </button>
         )}
       </div>
+
+      {/* Card 2: Private key for sending */}
+      <div style={cardStyle}>
+        <div style={hdrStyle}>
+          <div style={{...icoBase,background:'#6c63ff18',border:'1px solid #6c63ff33'}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" strokeWidth="2" strokeLinecap="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          </div>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Private Key (for Sending)</div>
+            <div style={{fontSize:12,color:'#555874',marginTop:2}}>Import a TPRV extended key or generate a new testnet4 wallet</div>
+          </div>
+        </div>
+
+        <div style={{display:'flex',gap:8}}>
+          <input value={tprvInput} onChange={e=>{setTprvInput(e.target.value);setError('');}}
+            placeholder="tprv..." type={showTprv?'text':'password'}
+            style={{flex:1,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,padding:'10px 14px',fontFamily:'monospace',outline:'none'}}
+            spellCheck={false}/>
+          <button onClick={()=>setShowTprv(v=>!v)}
+            style={{background:'#22263a',border:'1px solid #2a2d3e',borderRadius:10,color:'#8b8fa8',fontSize:14,padding:'10px 12px',cursor:'pointer'}}>
+            {showTprv?'🙈':'👁'}
+          </button>
+          <button onClick={handleImportTprv}
+            style={{background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,padding:'10px 16px',cursor:'pointer',whiteSpace:'nowrap'}}>
+            Import
+          </button>
+        </div>
+
+        <button onClick={handleGenerate}
+          style={{padding:'11px 14px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+          ✦ Generate New Testnet4 Wallet
+        </button>
+
+        {btcTprv && (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#12141a',border:'1px solid #6c63ff33',borderRadius:10}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{color:'#6c63ff',fontSize:10}}>●</span>
+              <span style={{fontSize:11,fontWeight:700,color:'#6c63ff',textTransform:'uppercase',letterSpacing:'.5px'}}>SIGNING KEY ACTIVE</span>
+            </div>
+            <button onClick={onRemoveTprv} style={{background:'transparent',border:'1px solid #ef444433',borderRadius:8,color:'#ef4444',fontSize:12,fontWeight:600,padding:'5px 12px',cursor:'pointer'}}>Remove Key</button>
+          </div>
+        )}
+
+        <div style={{fontSize:11,color:'#f59e0b',padding:'8px 12px',background:'#f59e0b12',border:'1px solid #f59e0b33',borderRadius:8}}>
+          ⚠️ Testnet only. Never paste a real Bitcoin private key here.
+        </div>
+      </div>
+
+      {error&&<div style={{fontSize:12,color:'#ef4444',padding:'8px 12px',background:'#ef444412',borderRadius:8}}>{error}</div>}
+      {status&&<div style={{fontSize:12,color:'#22c55e',padding:'8px 12px',background:'#22c55e12',borderRadius:8}}>{status}</div>}
     </div>
   );
 }
@@ -895,6 +1099,7 @@ function App() {
   const [importedWallet, setImportedWallet] = React.useState(() => {
     try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
   });
+  const [btcTprv, setBtcTprv] = React.useState(() => localStorage.getItem('btcTprv') || '');
 
   function handleImportWallet(wallet) {
     localStorage.setItem('importedWallet', JSON.stringify(wallet));
@@ -903,6 +1108,33 @@ function App() {
   function handleRemoveWallet() {
     localStorage.removeItem('importedWallet');
     setImportedWallet(null);
+  }
+
+  function handleImportTprv(tprv) {
+    const address = btcTprvToAddress(tprv); // throws on invalid
+    localStorage.setItem('btcTprv', tprv);
+    setBtcTprv(tprv);
+    // Also fetch the wallet balance for the derived address
+    loadBitcoinWallet(address, 'testnet4').then(wallet => handleImportWallet(wallet)).catch(()=>{});
+  }
+
+  function handleGenerateWallet() {
+    const wallet = btcGenerateWallet();
+    localStorage.setItem('btcTprv', wallet.tprv);
+    setBtcTprv(wallet.tprv);
+    loadBitcoinWallet(wallet.address, 'testnet4').then(w => handleImportWallet(w)).catch(()=>{});
+    return wallet;
+  }
+
+  function handleRemoveTprv() {
+    localStorage.removeItem('btcTprv');
+    setBtcTprv('');
+  }
+
+  function refreshBtcBalance() {
+    const addr = importedWallet?.address;
+    if (!addr) return;
+    loadBitcoinWallet(addr, 'testnet4').then(w => handleImportWallet(w)).catch(()=>{});
   }
 
   const liveAssets = importedWallet
@@ -956,11 +1188,23 @@ function App() {
           {page==='history'&&<TxHistory txs={importedWallet?.txs}/>}
           {page==='gallery'&&<GalleryPage/>}
           {page==='nfts'&&<Placeholder title="NFT Collection" sub="Your NFTs will appear here." icon="🖼"/>}
-          {page==='settings'&&<SettingsPage importedWallet={importedWallet} onImport={()=>setImportOpen(true)} onRemove={handleRemoveWallet}/>}
+          {page==='settings'&&<SettingsPage
+            importedWallet={importedWallet}
+            btcTprv={btcTprv}
+            onImport={()=>setImportOpen(true)}
+            onRemove={handleRemoveWallet}
+            onImportTprv={handleImportTprv}
+            onGenerateWallet={handleGenerateWallet}
+            onRemoveTprv={handleRemoveTprv}
+          />}
         </div>
       </main>
 
-      <SendModal open={sendOpen} onClose={()=>setSendOpen(false)}/>
+      <SendModal open={sendOpen} onClose={()=>setSendOpen(false)}
+        btcAddress={importedWallet?.address}
+        btcTprv={btcTprv}
+        onBalanceUpdate={refreshBtcBalance}
+      />
       <ReceiveModal open={recvOpen} onClose={()=>setRecvOpen(false)}/>
       <ImportWalletModal open={importOpen} onClose={()=>setImportOpen(false)} onImport={handleImportWallet}/>
     </div>
