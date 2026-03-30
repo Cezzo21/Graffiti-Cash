@@ -244,7 +244,7 @@ async function btcCommitInscription({ tprv, fromAddress, contentType, content })
   const ephXOnly   = secp256k1.getPublicKey(ephPrivKey, true).slice(1); // 32-byte x-only
 
   const leafScript       = btcInscriptionScript(ephXOnly, contentType, contentBytes);
-  const inscriptionP2TR  = btc.p2tr(ephXOnly, { script: leafScript }, btc.TEST_NETWORK);
+  const inscriptionP2TR  = btc.p2tr(ephXOnly, { script: leafScript }, btc.TEST_NETWORK, true);
 
   const { feeRate, commitFee, inscriptionSats } = await btcEstimateInscriptionFees(contentBytes);
 
