@@ -281,7 +281,7 @@ async function btcRevealInscription({ commitTxid, inscriptionSats, inscriptionP2
   const outputSats = inscriptionSats - revealFee;
   if (outputSats < 546) throw new Error(`Not enough sats for reveal output after fees (${outputSats} < 546 dust limit)`);
 
-  const tx = new btc.Transaction();
+  const tx = new btc.Transaction({ allowUnknownInputs: true });
   tx.addInput({
     txid: commitTxid, index: 0,
     witnessUtxo: { script: inscriptionP2TR.script, amount: BigInt(inscriptionSats) },
