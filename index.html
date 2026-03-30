@@ -866,19 +866,24 @@ const INSCRIPTIONS = [
 ];
 
 // ─── GALLERY PAGE ─────────────────────────────────────────────────────────────
-function GalleryPage() {
+function GalleryPage({ userInscriptions = [] }) {
   const [filter, setFilter] = React.useState('All');
   const [selected, setSelected] = React.useState(null);
-  const filtered = INSCRIPTIONS.filter(ins =>
+  const allInscriptions = [...userInscriptions, ...INSCRIPTIONS];
+  const filtered = allInscriptions.filter(ins =>
     filter === 'Images' ? ins.type.startsWith('image/') :
     filter === 'Text'   ? ins.type.startsWith('text/')  : true
   );
+  const liveCount = userInscriptions.length;
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:12}}>
         <div>
           <div style={{fontSize:16,fontWeight:700,color:'#f0f2ff'}}>Graffiti Gallery</div>
-          <div style={{fontSize:12,color:'#555874',marginTop:3}}>{INSCRIPTIONS.length} inscriptions permanently etched onto the Bitcoin blockchain</div>
+          <div style={{fontSize:12,color:'#555874',marginTop:3}}>
+            {INSCRIPTIONS.length} inscriptions permanently etched onto the Bitcoin blockchain
+            {liveCount>0&&<span style={{color:'#f7931a',fontWeight:600}}> · {liveCount} live testnet4</span>}
+          </div>
         </div>
         <div style={{display:'flex',gap:6}}>
           {['All','Images','Text'].map(f=>(
@@ -894,7 +899,10 @@ function GalleryPage() {
         {filtered.map(ins=>(
           <div key={ins.id} onClick={()=>setSelected(ins)}
             style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'}}>
-            <div style={{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden'}}>
+            <div style={{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden',position:'relative'}}>
+              {ins.isLive&&(
+                <div style={{position:'absolute',top:8,left:8,background:'#f7931a',color:'#fff',fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,letterSpacing:'.5px',zIndex:1}}>TESTNET4</div>
+              )}
               {ins.type==='image/svg+xml'
                 ? <div style={{width:'100%',height:'100%'}} dangerouslySetInnerHTML={{__html:ins.content}}/>
                 : <div style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',gap:8}}>
@@ -905,7 +913,9 @@ function GalleryPage() {
             </div>
             <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:5}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{ins.inscriptionNumber.toLocaleString()}</span>
+                <span style={{fontSize:11,color:ins.isLive?'#f7931a':'#6c63ff',fontWeight:600}}>
+                  {ins.isLive ? 'LIVE' : `#${ins.inscriptionNumber.toLocaleString()}`}
+                </span>
                 <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
                   background:ins.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
                   color:ins.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
@@ -915,7 +925,7 @@ function GalleryPage() {
               <div style={{fontSize:13,fontWeight:700,color:'#f0f2ff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{ins.title}</div>
               <div style={{fontSize:11,color:'#555874',lineHeight:1.5,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{ins.description}</div>
               <div style={{display:'flex',justifyContent:'space-between',marginTop:2}}>
-                <span style={{fontSize:10,color:'#555874'}}>Block {ins.blockHeight.toLocaleString()}</span>
+                <span style={{fontSize:10,color:'#555874'}}>{ins.isLive ? 'Pending' : `Block ${ins.blockHeight.toLocaleString()}`}</span>
                 <span style={{fontSize:10,color:'#555874'}}>{ins.fileSize}</span>
               </div>
             </div>
@@ -938,7 +948,10 @@ function GalleryPage() {
             </div>
             <div style={{flex:1,padding:'28px 22px 22px',display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
               <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{selected.inscriptionNumber.toLocaleString()}</span>
+                {selected.isLive
+                  ? <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(247,147,26,.15)',color:'#f7931a',border:'1px solid rgba(247,147,26,.3)',letterSpacing:'.5px'}}>LIVE TESTNET4</span>
+                  : <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{selected.inscriptionNumber.toLocaleString()}</span>
+                }
                 <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
                   background:selected.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
                   color:selected.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
@@ -948,16 +961,39 @@ function GalleryPage() {
               <div style={{fontSize:17,fontWeight:700,color:'#f0f2ff'}}>{selected.title}</div>
               <div style={{fontSize:12,color:'#8b8fa8',lineHeight:1.6}}>{selected.description}</div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'12px 0',borderTop:'1px solid #2a2d3e',borderBottom:'1px solid #2a2d3e'}}>
-                {[['Block Height',selected.blockHeight.toLocaleString()],['File Size',selected.fileSize],['Date',fDate(selected.date)],['Type',selected.type]].map(([l,v])=>(
+                {[
+                  ['Block Height', selected.isLive ? 'Pending' : selected.blockHeight.toLocaleString()],
+                  ['File Size', selected.fileSize],
+                  ['Date', fDate(selected.date)],
+                  ['Type', selected.type],
+                ].map(([l,v])=>(
                   <div key={l}><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:2}}>{l}</div><div style={{fontSize:12,color:'#f0f2ff'}}>{v}</div></div>
                 ))}
               </div>
               <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Inscribed By</div>
-                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px'}}>{selected.inscribedBy}</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.inscribedBy}</div>
               </div>
-              <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Transaction ID</div>
-                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.txId}</div>
-              </div>
+              {selected.isLive && selected.recipient && selected.recipient !== selected.inscribedBy && (
+                <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Recipient</div>
+                  <div style={{fontSize:11,color:'#f7931a',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.recipient}</div>
+                </div>
+              )}
+              {selected.isLive ? (
+                <React.Fragment>
+                  <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Commit Transaction</div>
+                    <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.commitTxId}</div>
+                    <a href={`https://mempool.space/testnet4/tx/${selected.commitTxId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
+                  </div>
+                  <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Reveal Transaction</div>
+                    <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.txId}</div>
+                    <a href={`https://mempool.space/testnet4/tx/${selected.txId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
+                  </div>
+                </React.Fragment>
+              ) : (
+                <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Transaction ID</div>
+                  <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.txId}</div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1214,6 +1250,15 @@ function App() {
     try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
   });
   const [btcTprv, setBtcTprv] = React.useState(() => localStorage.getItem('btcTprv') || '');
+  const [userInscriptions, setUserInscriptions] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem('userInscriptions') || '[]'); } catch(e) { return []; }
+  });
+
+  function handleInscriptionSaved(inscription) {
+    const updated = [inscription, ...userInscriptions];
+    localStorage.setItem('userInscriptions', JSON.stringify(updated));
+    setUserInscriptions(updated);
+  }
 
   function handleImportWallet(wallet) {
     localStorage.setItem('importedWallet', JSON.stringify(wallet));
@@ -1300,7 +1345,7 @@ function App() {
             </div>
           )}
           {page==='history'&&<TxHistory txs={importedWallet?.txs}/>}
-          {page==='gallery'&&<GalleryPage/>}
+          {page==='gallery'&&<GalleryPage userInscriptions={userInscriptions}/>}
           {page==='nfts'&&<Placeholder title="NFT Collection" sub="Your NFTs will appear here." icon="🖼"/>}
           {page==='settings'&&<SettingsPage
             importedWallet={importedWallet}
@@ -1324,6 +1369,7 @@ function App() {
       <InscribeModal open={inscribeOpen} onClose={()=>setInscribeOpen(false)}
         btcAddress={importedWallet?.address}
         btcTprv={btcTprv}
+        onInscriptionSaved={handleInscriptionSaved}
       />
     </div>
   );
@@ -1342,17 +1388,23 @@ function Placeholder({ title, sub, icon }) {
 
 // ─── INSCRIBE MODAL ──────────────────────────────────────────────────────────
 // Steps: 1=content input, 2=review/fees, 3=committing, 4=revealing, 5=success
-function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
-  const [step, setStep]               = React.useState(1);
-  const [inputMode, setInputMode]     = React.useState('text');  // 'text' | 'ipfs'
-  const [contentType, setContentType] = React.useState('text/plain;charset=utf-8');
-  const [textContent, setTextContent] = React.useState('');
-  const [ipfsCid, setIpfsCid]         = React.useState('');
-  const [ipfsFetching, setIpfsFetching] = React.useState(false);
-  const [feeInfo, setFeeInfo]         = React.useState(null);
-  const [error, setError]             = React.useState('');
-  const [commitTxid, setCommitTxid]   = React.useState('');
-  const [revealTxid, setRevealTxid]   = React.useState('');
+function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved }) {
+  const [step, setStep]                     = React.useState(1);
+  const [inputMode, setInputMode]           = React.useState('text');  // 'text' | 'ipfs'
+  const [contentType, setContentType]       = React.useState('text/plain;charset=utf-8');
+  const [textContent, setTextContent]       = React.useState('');
+  const [ipfsCid, setIpfsCid]               = React.useState('');
+  const [ipfsFetching, setIpfsFetching]     = React.useState(false);
+  const [recipientAddress, setRecipientAddress] = React.useState('');
+  const [feeInfo, setFeeInfo]               = React.useState(null);
+  const [error, setError]                   = React.useState('');
+  const [commitTxid, setCommitTxid]         = React.useState('');
+  const [revealTxid, setRevealTxid]         = React.useState('');
+
+  // Default recipient to wallet address each time the modal opens
+  React.useEffect(() => {
+    if (open) setRecipientAddress(btcAddress || '');
+  }, [open, btcAddress]);
 
   React.useEffect(() => {
     if (step !== 2 || !textContent) return;
@@ -1379,6 +1431,7 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
     if (!btcTprv) { setError('No signing key. Import a TPRV key in Settings first.'); return; }
     if (!btcAddress) { setError('No wallet address found. Check Settings.'); return; }
     if (!textContent.trim()) { setError('Enter some content to inscribe.'); return; }
+    if (!recipientAddress.trim()) { setError('Enter a recipient address.'); return; }
     setStep(2);
   }
 
@@ -1391,8 +1444,27 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
     } catch(e) { setError(e.message); setStep(2); return; }
     setStep(4);
     try {
-      const { revealTxid: rtxid } = await btcRevealInscription({ ...cd, recipientAddress: btcAddress });
-      setRevealTxid(rtxid); setStep(5);
+      const { revealTxid: rtxid } = await btcRevealInscription({ ...cd, recipientAddress });
+      setRevealTxid(rtxid);
+      // Save inscription to gallery
+      if (onInscriptionSaved) {
+        const bytes = new TextEncoder().encode(textContent);
+        onInscriptionSaved({
+          id: `live_${rtxid}`,
+          type: contentType,
+          title: textContent.slice(0, 40) + (textContent.length > 40 ? '…' : ''),
+          description: `Inscribed via Bitcoin Ordinals on Testnet4`,
+          content: textContent,
+          inscribedBy: btcAddress,
+          recipient: recipientAddress,
+          txId: rtxid,
+          commitTxId: cd.commitTxid,
+          date: new Date().toISOString().slice(0, 10),
+          fileSize: bytes.length < 1024 ? `${bytes.length} B` : `${(bytes.length/1024).toFixed(1)} KB`,
+          isLive: true,
+        });
+      }
+      setStep(5);
     } catch(e) {
       setError(`Commit succeeded (${cd.commitTxid.slice(0,12)}…) but reveal failed: ${e.message}`);
       setStep(2);
@@ -1407,6 +1479,7 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
 
   if (!open) return null;
   const byteCount = new TextEncoder().encode(textContent).length;
+  const ownWallet = recipientAddress === btcAddress;
   const IS = {  // inline styles
     overlay: {position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
     box:     {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
@@ -1496,6 +1569,13 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
               </select>
             </div>
 
+            <div>
+              <label style={IS.lbl}>Recipient Address</label>
+              <input value={recipientAddress} onChange={e=>{setRecipientAddress(e.target.value);setError('')}}
+                placeholder="tb1q..." style={{...IS.inp,fontFamily:'monospace'}} spellCheck={false}/>
+              <div style={{marginTop:6,fontSize:11,color:'#555874'}}>The inscription will be sent to this address. Defaults to your own wallet.</div>
+            </div>
+
             {!btcTprv&&<div style={IS.warn}>⚠️ No signing key configured. Go to <strong>Settings</strong> to import a TPRV key.</div>}
             {error&&<div style={IS.err}>{error}</div>}
             <button onClick={handleReview} style={IS.priBtn}>Review Inscription →</button>
@@ -1518,13 +1598,16 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
                 ['Reveal fee',  feeInfo ? `~${feeInfo.revealFee.toLocaleString()} sats` : '…'],
                 ['Total cost',  feeInfo ? `~${feeInfo.totalNeeded.toLocaleString()} sats` : '…'],
                 null,
-                ['Recipient', btcAddress],
+                ['From', btcAddress],
+                ['Recipient', recipientAddress],
                 ['Network', 'Bitcoin Testnet4'],
               ].map((r,i) => r===null
                 ? <div key={i} style={IS.div}/>
                 : <div key={i} style={IS.row}>
                     <span style={{fontSize:12,color:'#555874',flexShrink:0,paddingTop:1}}>{r[0]}</span>
-                    <span style={{fontSize:12,color:'#f0f2ff',fontWeight:500,textAlign:'right',fontFamily:r[0]==='Recipient'?'monospace':undefined,wordBreak:'break-all'}}>{r[1]}</span>
+                    <span style={{fontSize:12,fontWeight:500,textAlign:'right',wordBreak:'break-all',
+                      fontFamily:(r[0]==='From'||r[0]==='Recipient')?'monospace':undefined,
+                      color:r[0]==='Recipient'?(ownWallet?'#22c55e':'#f7931a'):'#f0f2ff'}}>{r[1]}</span>
                   </div>
               )}
             </div>
@@ -1579,6 +1662,12 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
             <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>Inscription Created!</div>
             <div style={{fontSize:13,color:'#8b8fa8',maxWidth:320}}>Your content has been inscribed on Bitcoin Testnet4 via Ordinals.</div>
 
+            <div style={{...IS.txBox,borderColor:ownWallet?'#22c55e33':'#f7931a33'}}>
+              <div style={IS.txLbl}>Recipient</div>
+              <div style={{...IS.txVal,color:ownWallet?'#22c55e':'#f7931a'}}>{recipientAddress}</div>
+              {ownWallet&&<div style={{fontSize:11,color:'#22c55e'}}>Your own wallet</div>}
+            </div>
+
             <div style={IS.txBox}>
               <div style={IS.txLbl}>Commit Transaction</div>
               <div style={IS.txVal}>{commitTxid}</div>
@@ -1596,7 +1685,7 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
             </div>
 
             <div style={{fontSize:11,color:'#555874',textAlign:'center',lineHeight:1.5,maxWidth:320}}>
-              Once confirmed, this inscription can be viewed on any Ordinals testnet4 explorer using the reveal txid.
+              The inscription has been added to your Gallery. Once confirmed, it can be viewed on any Ordinals testnet4 explorer.
             </div>
             <button onClick={handleClose} style={IS.priBtn}>Done</button>
           </div>
