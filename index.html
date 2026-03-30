@@ -190,6 +190,112 @@ async function btcSend({ tprv, fromAddress, toAddress, amountSats }) {
 }
 
 
+// ─── BITCOIN INSCRIPTION UTILITIES (Ordinals) ────────────────────────────────
+function btcInscriptionScript(xOnlyPubkey, contentType, contentBytes) {
+  if (!window._btc) throw new Error('Bitcoin library not loaded. Please refresh.');
+  const { btc } = window._btc;
+  const enc = (s) => new TextEncoder().encode(s);
+  // Chunk content into 520-byte pieces (tapscript push limit)
+  const chunks = [];
+  for (let i = 0; i < contentBytes.length; i += 520) chunks.push(contentBytes.slice(i, i + 520));
+  if (!chunks.length) chunks.push(new Uint8Array(0));
+  // Build Ordinals envelope tapscript:
+  //   <pubkey> OP_CHECKSIG  OP_0 OP_IF  "ord" <0x01> <mime>  OP_0  [<chunk>...]  OP_ENDIF
+  return btc.Script.encode([
+    xOnlyPubkey,
+    'CHECKSIG',
+    0,                         // OP_0 / OP_FALSE — disables IF branch in normal execution
+    'IF',
+    enc('ord'),                // Ordinals envelope marker
+    new Uint8Array([1]),       // tag 1 = content-type (data push, not OP_1)
+    enc(contentType),          // MIME type
+    0,                         // tag 0 = body separator (OP_0)
+    ...chunks,                 // inscription content
+    'ENDIF',
+  ]);
+}
+
+async function btcEstimateInscriptionFees(contentBytes) {
+  let feeRate = 5;
+  try {
+    const r = await fetch(`${BTC_API}/v1/fees/recommended`);
+    const d = await r.json();
+    feeRate = Math.max(d.halfHourFee || 5, 1);
+  } catch {}
+  const commitFee = Math.ceil(150 * feeRate);                        // 1-in-2-out P2WPKH
+  const revealFee = Math.ceil((82 + Math.ceil((150 + contentBytes.length) / 4)) * feeRate);
+  const inscriptionSats = revealFee + 546;                           // cover reveal fee + dust
+  return { feeRate, commitFee, revealFee, inscriptionSats, totalNeeded: commitFee + inscriptionSats };
+}
+
+// Step 1: build + broadcast commit tx  (wallet P2WPKH → inscription P2TR)
+async function btcCommitInscription({ tprv, fromAddress, contentType, content }) {
+  if (!window._btc) throw new Error('Bitcoin library not loaded. Please refresh.');
+  const { btc, secp256k1 } = window._btc;
+  const contentBytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+
+  const walletPrivKey = btcTprvToPrivKey(tprv);
+  const walletPubKey  = secp256k1.getPublicKey(walletPrivKey, true);
+  const p2wpkh        = btc.p2wpkh(walletPubKey, btc.TEST_NETWORK);
+  if (p2wpkh.address !== fromAddress) throw new Error('TPRV key does not match wallet address');
+
+  // Ephemeral keypair for this inscription
+  const ephPrivKey = crypto.getRandomValues(new Uint8Array(32));
+  const ephXOnly   = secp256k1.getPublicKey(ephPrivKey, true).slice(1); // 32-byte x-only
+
+  const leafScript       = btcInscriptionScript(ephXOnly, contentType, contentBytes);
+  const inscriptionP2TR  = btc.p2tr(ephXOnly, { script: leafScript }, btc.TEST_NETWORK);
+
+  const { feeRate, commitFee, inscriptionSats } = await btcEstimateInscriptionFees(contentBytes);
+
+  const utxoRes = await fetch(`${BTC_API}/address/${fromAddress}/utxo`);
+  if (!utxoRes.ok) throw new Error('Failed to fetch UTXOs');
+  const utxos = await utxoRes.json();
+  if (!utxos.length) throw new Error('No spendable UTXOs. Fund your testnet4 address first.');
+
+  const sorted = [...utxos].sort((a, b) => b.value - a.value);
+  const needed  = commitFee + inscriptionSats;
+  let totalIn = 0; const selected = [];
+  for (const u of sorted) { selected.push(u); totalIn += u.value; if (totalIn >= needed) break; }
+  if (totalIn < needed)
+    throw new Error(`Insufficient balance: need ${needed.toLocaleString()} sats, have ${totalIn.toLocaleString()} sats`);
+
+  const tx = new btc.Transaction();
+  for (const u of selected) tx.addInput({ txid: u.txid, index: u.vout, witnessUtxo: { script: p2wpkh.script, amount: BigInt(u.value) } });
+  tx.addOutputAddress(inscriptionP2TR.address, BigInt(inscriptionSats), btc.TEST_NETWORK);
+  const change = totalIn - inscriptionSats - commitFee;
+  if (change > 546) tx.addOutput({ script: p2wpkh.script, amount: BigInt(change) });
+  tx.sign(walletPrivKey); tx.finalize();
+
+  const bRes = await fetch(`${BTC_API}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: tx.hex });
+  if (!bRes.ok) throw new Error(`Commit broadcast failed: ${await bRes.text()}`);
+  const commitTxid = (await bRes.text()).trim();
+  return { commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate };
+}
+
+// Step 2: build + broadcast reveal tx  (inscription P2TR script-path spend → recipient)
+async function btcRevealInscription({ commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate, recipientAddress }) {
+  if (!window._btc) throw new Error('Bitcoin library not loaded. Please refresh.');
+  const { btc, secp256k1 } = window._btc;
+  const revealFee = Math.ceil(300 * feeRate);
+  const outputSats = inscriptionSats - revealFee;
+  if (outputSats < 546) throw new Error(`Not enough sats for reveal output after fees (${outputSats} < 546 dust limit)`);
+
+  const tx = new btc.Transaction();
+  tx.addInput({
+    txid: commitTxid, index: 0,
+    witnessUtxo: { script: inscriptionP2TR.script, amount: BigInt(inscriptionSats) },
+    tapLeafScript: inscriptionP2TR.tapLeafScript,  // enables script-path spend + reveals inscription
+  });
+  tx.addOutputAddress(recipientAddress, BigInt(outputSats), btc.TEST_NETWORK);
+  tx.sign(ephPrivKey); tx.finalize();
+
+  const bRes = await fetch(`${BTC_API}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: tx.hex });
+  if (!bRes.ok) throw new Error(`Reveal broadcast failed: ${await bRes.text()}`);
+  return { revealTxid: (await bRes.text()).trim() };
+}
+
+
 // ─── SPARKLINE ───────────────────────────────────────────────────────────────
 function Sparkline({ data, color, width=80, height=32 }) {
   if (!data || data.length < 2) return null;
@@ -234,7 +340,7 @@ function Donut({ assets }) {
 
 
 // ─── PORTFOLIO CARD ───────────────────────────────────────────────────────────
-function PortfolioCard({ assets, onSend, onReceive, onImport, importedWallet }) {
+function PortfolioCard({ assets, onSend, onReceive, onInscribe, onImport, importedWallet }) {
   const total = portfolioTotal(assets);
   const prev = total * 0.9712;
   const change = total - prev;
@@ -264,10 +370,11 @@ function PortfolioCard({ assets, onSend, onReceive, onImport, importedWallet }) 
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:10}}>
         <div style={{display:'flex',gap:10}}>
-          <QuickBtn icon={<SendIco/>} label="Send"    onClick={onSend}     primary/>
-          <QuickBtn icon={<RecvIco/>} label="Receive" onClick={onReceive}/>
-          <QuickBtn icon={<SwapIco/>} label="Swap"    onClick={()=>{}}/>
-          <QuickBtn icon={<BuyIco/>}  label="Buy"     onClick={()=>{}}/>
+          <QuickBtn icon={<SendIco/>}     label="Send"     onClick={onSend}      primary/>
+          <QuickBtn icon={<RecvIco/>}     label="Receive"  onClick={onReceive}/>
+          <QuickBtn icon={<InscrIco/>}    label="Inscribe" onClick={onInscribe}   orange/>
+          <QuickBtn icon={<SwapIco/>}     label="Swap"     onClick={()=>{}}/>
+          <QuickBtn icon={<BuyIco/>}      label="Buy"      onClick={()=>{}}/>
         </div>
         {importedWallet
           ? <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'rgba(34,197,94,.08)',border:'1px solid rgba(34,197,94,.25)',borderRadius:10}}>
@@ -286,16 +393,22 @@ function PortfolioCard({ assets, onSend, onReceive, onImport, importedWallet }) 
   );
 }
 
-function QuickBtn({ icon, label, onClick, primary }) {
+function QuickBtn({ icon, label, onClick, primary, orange }) {
   const [h,setH] = React.useState(false);
+  const bg = primary
+    ? (h ? 'linear-gradient(135deg,#7d75ff,#aea9ff)' : 'linear-gradient(135deg,#6c63ff,#9d96ff)')
+    : orange
+      ? (h ? 'linear-gradient(135deg,#ffaa33,#ffc166)' : 'linear-gradient(135deg,#f7931a,#ffb347)')
+      : (h ? '#2a2d3e' : '#22263a');
+  const shadow = (primary&&h) ? '0 4px 16px rgba(108,99,255,.4)' : (orange&&h) ? '0 4px 16px rgba(247,147,26,.4)' : 'none';
   return (
     <button onClick={onClick} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
       style={{display:'flex',alignItems:'center',gap:7,padding:'9px 16px',borderRadius:10,fontSize:13,fontWeight:600,
-        background:primary?(h?'linear-gradient(135deg,#7d75ff,#aea9ff)':'linear-gradient(135deg,#6c63ff,#9d96ff)'):(h?'#2a2d3e':'#22263a'),
-        border:primary?'1px solid transparent':'1px solid #2a2d3e',
-        color:primary?'#fff':'#f0f2ff',
-        transform:primary&&h?'translateY(-1px)':'none',
-        boxShadow:primary&&h?'0 4px 16px rgba(108,99,255,.4)':'none',
+        background:bg,
+        border:(primary||orange)?'1px solid transparent':'1px solid #2a2d3e',
+        color:(primary||orange)?'#fff':'#f0f2ff',
+        transform:((primary||orange)&&h)?'translateY(-1px)':'none',
+        boxShadow:shadow,
         transition:'all .15s'}}>
       {icon}<span>{label}</span>
     </button>
@@ -1093,9 +1206,10 @@ function Sidebar({ active, onNav, importedWallet }) {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 function App() {
   const [page, setPage] = React.useState('dashboard');
-  const [sendOpen, setSendOpen]       = React.useState(false);
-  const [recvOpen, setRecvOpen]       = React.useState(false);
-  const [importOpen, setImportOpen]   = React.useState(false);
+  const [sendOpen, setSendOpen]         = React.useState(false);
+  const [recvOpen, setRecvOpen]         = React.useState(false);
+  const [importOpen, setImportOpen]     = React.useState(false);
+  const [inscribeOpen, setInscribeOpen] = React.useState(false);
   const [importedWallet, setImportedWallet] = React.useState(() => {
     try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
   });
@@ -1172,7 +1286,7 @@ function App() {
           {page==='dashboard'&&(
             <div style={{display:'flex',gap:18,height:'100%'}}>
               <div style={{flex:1,display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
-                <PortfolioCard assets={liveAssets} onSend={()=>setSendOpen(true)} onReceive={()=>setRecvOpen(true)} onImport={()=>setImportOpen(true)} importedWallet={importedWallet}/>
+                <PortfolioCard assets={liveAssets} onSend={()=>setSendOpen(true)} onReceive={()=>setRecvOpen(true)} onInscribe={()=>setInscribeOpen(true)} onImport={()=>setImportOpen(true)} importedWallet={importedWallet}/>
                 <StatsBar assets={liveAssets}/>
                 <AssetList assets={liveAssets}/>
               </div>
@@ -1207,6 +1321,10 @@ function App() {
       />
       <ReceiveModal open={recvOpen} onClose={()=>setRecvOpen(false)}/>
       <ImportWalletModal open={importOpen} onClose={()=>setImportOpen(false)} onImport={handleImportWallet}/>
+      <InscribeModal open={inscribeOpen} onClose={()=>setInscribeOpen(false)}
+        btcAddress={importedWallet?.address}
+        btcTprv={btcTprv}
+      />
     </div>
   );
 }
@@ -1217,6 +1335,273 @@ function Placeholder({ title, sub, icon }) {
       <div style={{fontSize:52,marginBottom:8}}>{icon}</div>
       <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>{title}</div>
       <div style={{fontSize:13,color:'#555874'}}>{sub}</div>
+    </div>
+  );
+}
+
+
+// ─── INSCRIBE MODAL ──────────────────────────────────────────────────────────
+// Steps: 1=content input, 2=review/fees, 3=committing, 4=revealing, 5=success
+function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
+  const [step, setStep]               = React.useState(1);
+  const [inputMode, setInputMode]     = React.useState('text');  // 'text' | 'ipfs'
+  const [contentType, setContentType] = React.useState('text/plain;charset=utf-8');
+  const [textContent, setTextContent] = React.useState('');
+  const [ipfsCid, setIpfsCid]         = React.useState('');
+  const [ipfsFetching, setIpfsFetching] = React.useState(false);
+  const [feeInfo, setFeeInfo]         = React.useState(null);
+  const [error, setError]             = React.useState('');
+  const [commitTxid, setCommitTxid]   = React.useState('');
+  const [revealTxid, setRevealTxid]   = React.useState('');
+
+  React.useEffect(() => {
+    if (step !== 2 || !textContent) return;
+    const bytes = new TextEncoder().encode(textContent);
+    btcEstimateInscriptionFees(bytes).then(setFeeInfo).catch(()=>{});
+  }, [step, textContent]);
+
+  async function handleFetchIpfs() {
+    if (!ipfsCid.trim()) return;
+    setIpfsFetching(true); setError('');
+    try {
+      const resp = await fetch(`https://ipfs.io/ipfs/${ipfsCid.trim()}`);
+      if (!resp.ok) throw new Error(`Gateway returned ${resp.status}`);
+      const ct = (resp.headers.get('content-type') || 'text/plain').split(';')[0].trim();
+      setContentType(ct.includes('text') || ct === 'application/json' ? ct : 'text/plain;charset=utf-8');
+      setTextContent(await resp.text());
+      setInputMode('text');
+    } catch(e) { setError(`IPFS fetch failed: ${e.message}`); }
+    finally { setIpfsFetching(false); }
+  }
+
+  function handleReview() {
+    setError('');
+    if (!btcTprv) { setError('No signing key. Import a TPRV key in Settings first.'); return; }
+    if (!btcAddress) { setError('No wallet address found. Check Settings.'); return; }
+    if (!textContent.trim()) { setError('Enter some content to inscribe.'); return; }
+    setStep(2);
+  }
+
+  async function handleInscribe() {
+    setError(''); setStep(3);
+    let cd;
+    try {
+      cd = await btcCommitInscription({ tprv: btcTprv, fromAddress: btcAddress, contentType, content: textContent });
+      setCommitTxid(cd.commitTxid);
+    } catch(e) { setError(e.message); setStep(2); return; }
+    setStep(4);
+    try {
+      const { revealTxid: rtxid } = await btcRevealInscription({ ...cd, recipientAddress: btcAddress });
+      setRevealTxid(rtxid); setStep(5);
+    } catch(e) {
+      setError(`Commit succeeded (${cd.commitTxid.slice(0,12)}…) but reveal failed: ${e.message}`);
+      setStep(2);
+    }
+  }
+
+  function handleClose() {
+    setStep(1); setInputMode('text'); setTextContent(''); setIpfsCid('');
+    setFeeInfo(null); setError(''); setCommitTxid(''); setRevealTxid('');
+    onClose();
+  }
+
+  if (!open) return null;
+  const byteCount = new TextEncoder().encode(textContent).length;
+  const IS = {  // inline styles
+    overlay: {position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
+    box:     {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
+    hdr:     {display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4},
+    title:   {fontSize:17,fontWeight:800,color:'#f0f2ff'},
+    closeBtn:{background:'transparent',border:'none',color:'#555874',cursor:'pointer',padding:4,display:'flex'},
+    badge:   (col)=>({display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'6px 12px',background:`${col}12`,border:`1px solid ${col}33`,borderRadius:8}),
+    tabs:    {display:'flex',gap:6,background:'#12141a',borderRadius:10,padding:4},
+    tab:     (active)=>({flex:1,padding:'8px 12px',background:active?'#22263a':'transparent',border:'none',color:active?'#f0f2ff':'#555874',fontSize:13,fontWeight:600,borderRadius:8,cursor:'pointer'}),
+    lbl:     {display:'block',fontSize:11,fontWeight:600,color:'#8b8fa8',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'},
+    inp:     {width:'100%',padding:'10px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,boxSizing:'border-box'},
+    ta:      {width:'100%',minHeight:130,padding:'12px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:12,fontFamily:'monospace',resize:'vertical',boxSizing:'border-box',lineHeight:1.5},
+    sel:     {width:'100%',padding:'10px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,cursor:'pointer'},
+    warn:    {padding:'10px 12px',background:'#f59e0b18',border:'1px solid #f59e0b33',borderRadius:10,fontSize:12,color:'#f59e0b',lineHeight:1.4},
+    err:     {padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444',lineHeight:1.4},
+    priBtn:  {width:'100%',padding:'13px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer'},
+    secBtn:  {flex:1,padding:'13px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'},
+    card:    {background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:10},
+    row:     {display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12},
+    div:     {height:1,background:'#2a2d3e'},
+    prev:    {background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,padding:'10px 14px'},
+    prevLbl: {fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8},
+    prevTxt: {fontSize:11,color:'#8b8fa8',fontFamily:'monospace',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',maxHeight:100,overflow:'auto'},
+    proc:    {display:'flex',flexDirection:'column',alignItems:'center',gap:16,padding:'24px 0',textAlign:'center'},
+    spin:    {width:40,height:40,border:'3px solid #2a2d3e',borderTop:'3px solid #f7931a',borderRadius:'50%',animation:'spin .8s linear infinite'},
+    succ:    {display:'flex',flexDirection:'column',alignItems:'center',gap:14,textAlign:'center'},
+    succIco: {width:64,height:64,background:'#22c55e18',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center'},
+    txBox:   {width:'100%',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:'12px 14px',display:'flex',flexDirection:'column',gap:6,textAlign:'left'},
+    txLbl:   {fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px'},
+    txVal:   {fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.5},
+    extLink: {fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'},
+  };
+
+  return (
+    <div style={IS.overlay} onClick={handleClose}>
+      <div style={IS.box} onClick={e=>e.stopPropagation()}>
+        <div style={IS.hdr}>
+          <div style={IS.title}>Inscribe on Bitcoin</div>
+          <button style={IS.closeBtn} onClick={handleClose}><CloseIco/></button>
+        </div>
+
+        {/* Step 1: Content input */}
+        {step===1&&(
+          <React.Fragment>
+            <div style={IS.badge('#f7931a')}>
+              <span style={{color:'#f7931a',fontSize:9}}>●</span>
+              <span style={{fontSize:11,color:'#f7931a',fontWeight:600,letterSpacing:'.5px'}}>BITCOIN ORDINALS — TESTNET4</span>
+            </div>
+
+            <div style={IS.tabs}>
+              <button style={IS.tab(inputMode==='text')} onClick={()=>setInputMode('text')}>Text / Code</button>
+              <button style={IS.tab(inputMode==='ipfs')} onClick={()=>setInputMode('ipfs')}>Fetch from IPFS</button>
+            </div>
+
+            {inputMode==='ipfs'&&(
+              <div>
+                <label style={IS.lbl}>IPFS CID</label>
+                <div style={{display:'flex',gap:8}}>
+                  <input value={ipfsCid} onChange={e=>{setIpfsCid(e.target.value);setError('')}}
+                    placeholder="Qm... or bafy..." style={{...IS.inp,flex:1,fontFamily:'monospace'}} spellCheck={false}/>
+                  <button onClick={handleFetchIpfs} disabled={ipfsFetching||!ipfsCid.trim()}
+                    style={{...IS.secBtn,padding:'10px 16px',width:'auto'}}>
+                    {ipfsFetching?'…':'Fetch'}
+                  </button>
+                </div>
+                <div style={{marginTop:6,fontSize:11,color:'#555874'}}>Content will be fetched via ipfs.io and shown below for review.</div>
+              </div>
+            )}
+
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+                <label style={IS.lbl}>Content</label>
+                <span style={{fontSize:11,color:byteCount>4096?'#ef4444':'#555874'}}>{byteCount.toLocaleString()} bytes</span>
+              </div>
+              <textarea value={textContent} onChange={e=>{setTextContent(e.target.value);setError('')}}
+                placeholder={'Enter text, JSON, SVG…\n\nExample:\nHello, Bitcoin!'}
+                style={IS.ta} spellCheck={false}/>
+            </div>
+
+            <div>
+              <label style={IS.lbl}>Content Type</label>
+              <select value={contentType} onChange={e=>setContentType(e.target.value)} style={IS.sel}>
+                <option value="text/plain;charset=utf-8">text/plain</option>
+                <option value="text/html;charset=utf-8">text/html</option>
+                <option value="application/json">application/json</option>
+                <option value="image/svg+xml">image/svg+xml</option>
+              </select>
+            </div>
+
+            {!btcTprv&&<div style={IS.warn}>⚠️ No signing key configured. Go to <strong>Settings</strong> to import a TPRV key.</div>}
+            {error&&<div style={IS.err}>{error}</div>}
+            <button onClick={handleReview} style={IS.priBtn}>Review Inscription →</button>
+          </React.Fragment>
+        )}
+
+        {/* Step 2: Review + fees */}
+        {step===2&&(
+          <React.Fragment>
+            <div style={IS.badge('#22c55e')}>
+              <span style={{color:'#22c55e',fontSize:9}}>●</span>
+              <span style={{fontSize:11,color:'#22c55e',fontWeight:600,letterSpacing:'.5px'}}>LIVE TESTNET4 INSCRIPTION</span>
+            </div>
+            <div style={IS.card}>
+              {[
+                ['Content type', contentType],
+                ['Size', `${byteCount.toLocaleString()} bytes`],
+                null,
+                ['Commit fee',  feeInfo ? `~${feeInfo.commitFee.toLocaleString()} sats` : '…'],
+                ['Reveal fee',  feeInfo ? `~${feeInfo.revealFee.toLocaleString()} sats` : '…'],
+                ['Total cost',  feeInfo ? `~${feeInfo.totalNeeded.toLocaleString()} sats` : '…'],
+                null,
+                ['Recipient', btcAddress],
+                ['Network', 'Bitcoin Testnet4'],
+              ].map((r,i) => r===null
+                ? <div key={i} style={IS.div}/>
+                : <div key={i} style={IS.row}>
+                    <span style={{fontSize:12,color:'#555874',flexShrink:0,paddingTop:1}}>{r[0]}</span>
+                    <span style={{fontSize:12,color:'#f0f2ff',fontWeight:500,textAlign:'right',fontFamily:r[0]==='Recipient'?'monospace':undefined,wordBreak:'break-all'}}>{r[1]}</span>
+                  </div>
+              )}
+            </div>
+            <div style={IS.prev}>
+              <div style={IS.prevLbl}>Content preview</div>
+              <pre style={IS.prevTxt}>{textContent.slice(0,300)}{textContent.length>300?'\n…':''}</pre>
+            </div>
+            {error&&<div style={IS.err}>{error}</div>}
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={()=>{setStep(1);setError('')}} style={IS.secBtn}>Back</button>
+              <button onClick={handleInscribe} style={{...IS.priBtn,flex:1,width:'auto'}}>Inscribe Now</button>
+            </div>
+          </React.Fragment>
+        )}
+
+        {/* Step 3: Committing */}
+        {step===3&&(
+          <div style={IS.proc}>
+            <div style={IS.spin}/>
+            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Broadcasting Commit Transaction…</div>
+            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>
+              Sending BTC to the inscription address. This locks the content on-chain.
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Revealing */}
+        {step===4&&(
+          <div style={IS.proc}>
+            <div style={IS.spin}/>
+            <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Broadcasting Reveal Transaction…</div>
+            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>
+              Spending the inscription output. This reveals your content as an Ordinal.
+            </div>
+            {commitTxid&&(
+              <div style={IS.txBox}>
+                <div style={IS.txLbl}>Commit TX</div>
+                <div style={IS.txVal}>{commitTxid}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 5: Success */}
+        {step===5&&(
+          <div style={IS.succ}>
+            <div style={IS.succIco}>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>Inscription Created!</div>
+            <div style={{fontSize:13,color:'#8b8fa8',maxWidth:320}}>Your content has been inscribed on Bitcoin Testnet4 via Ordinals.</div>
+
+            <div style={IS.txBox}>
+              <div style={IS.txLbl}>Commit Transaction</div>
+              <div style={IS.txVal}>{commitTxid}</div>
+              <a href={`https://mempool.space/testnet4/tx/${commitTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>
+                View commit on Mempool.space ↗
+              </a>
+            </div>
+
+            <div style={IS.txBox}>
+              <div style={IS.txLbl}>Reveal Transaction (Inscription)</div>
+              <div style={IS.txVal}>{revealTxid}</div>
+              <a href={`https://mempool.space/testnet4/tx/${revealTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>
+                View reveal on Mempool.space ↗
+              </a>
+            </div>
+
+            <div style={{fontSize:11,color:'#555874',textAlign:'center',lineHeight:1.5,maxWidth:320}}>
+              Once confirmed, this inscription can be viewed on any Ordinals testnet4 explorer using the reveal txid.
+            </div>
+            <button onClick={handleClose} style={IS.priBtn}>Done</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1251,6 +1636,7 @@ function CopyIco()    { return <svg width="12" height="12" viewBox="0 0 24 24" f
 function CloseIco()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>; }
 function SendIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>; }
 function RecvIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/></svg>; }
+function InscrIco()   { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>; }
 function SwapIco()    { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>; }
 function BuyIco()     { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>; }
 function ArrowDwnIco({color}){ return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>; }
