@@ -222,9 +222,9 @@ async function btcEstimateInscriptionFees(contentBytes) {
     const d = await r.json();
     feeRate = Math.max(d.halfHourFee || 5, 1);
   } catch {}
-  const commitFee = Math.ceil(150 * feeRate);                        // 1-in-2-out P2WPKH
-  const revealFee = Math.ceil((82 + Math.ceil((150 + contentBytes.length) / 4)) * feeRate);
-  const inscriptionSats = revealFee + 546;                           // cover reveal fee + dust
+  const commitFee = Math.ceil(150 * feeRate);       // 1-in-2-out P2WPKH
+  const revealFee = Math.ceil(300 * feeRate);       // conservative; matches revealInscription's charge
+  const inscriptionSats = revealFee + 546 + 100;    // reveal fee + dust + buffer
   return { feeRate, commitFee, revealFee, inscriptionSats, totalNeeded: commitFee + inscriptionSats };
 }
 
