@@ -215,16 +215,35 @@ function btcInscriptionScript(xOnlyPubkey, contentType, contentBytes) {
   ]);
 }
 
+// Maximum inscription content size that fits inside a standard Bitcoin transaction.
+// Reveal tx weight ≈ 380 (non-witness overhead × 4) + 150 (witness overhead) + contentBytes.length
+// vbytes = ceil(weight / 4).  Bitcoin standard limit = 100,000 vbytes.
+// Solving: (380 + 150 + N) / 4 ≤ 100,000  →  N ≤ ~399,470.  Use 390,000 as a safe limit.
+const MAX_INSCRIPTION_BYTES = 390_000;
+
 async function btcEstimateInscriptionFees(contentBytes) {
+  const contentLen = contentBytes instanceof Uint8Array ? contentBytes.length
+    : new TextEncoder().encode(contentBytes).length;
+
+  if (contentLen > MAX_INSCRIPTION_BYTES)
+    throw new Error(
+      `Content too large: ${(contentLen / 1024).toFixed(1)} KB. ` +
+      `Bitcoin transactions are limited to ~390 KB of inscription data.`
+    );
+
   let feeRate = 5;
   try {
     const r = await fetch(`${BTC_API}/v1/fees/recommended`);
     const d = await r.json();
     feeRate = Math.max(d.halfHourFee || 5, 1);
   } catch {}
-  const commitFee = Math.ceil(150 * feeRate);       // 1-in-2-out P2WPKH
-  const revealFee = Math.ceil(300 * feeRate);       // conservative; matches revealInscription's charge
-  const inscriptionSats = revealFee + 546 + 100;    // reveal fee + dust + buffer
+
+  const commitVbytes = 150;   // 1-in-2-out P2WPKH → P2TR + change
+  // Reveal tx: ~530 weight units of overhead + 1 weight unit per content byte (witness discount)
+  const revealVbytes  = Math.ceil((530 + contentLen) / 4);
+  const commitFee     = Math.ceil(commitVbytes * feeRate);
+  const revealFee     = Math.ceil(revealVbytes * feeRate);
+  const inscriptionSats = revealFee + 546 + 100;   // reveal fee + dust + buffer
   return { feeRate, commitFee, revealFee, inscriptionSats, totalNeeded: commitFee + inscriptionSats };
 }
 
@@ -246,7 +265,7 @@ async function btcCommitInscription({ tprv, fromAddress, contentType, content })
   const leafScript       = btcInscriptionScript(ephXOnly, contentType, contentBytes);
   const inscriptionP2TR  = btc.p2tr(ephXOnly, { script: leafScript }, btc.TEST_NETWORK, true);
 
-  const { feeRate, commitFee, inscriptionSats } = await btcEstimateInscriptionFees(contentBytes);
+  const { feeRate, commitFee, inscriptionSats, revealFee } = await btcEstimateInscriptionFees(contentBytes);
 
   const utxoRes = await fetch(`${BTC_API}/address/${fromAddress}/utxo`);
   if (!utxoRes.ok) throw new Error('Failed to fetch UTXOs');
@@ -270,14 +289,14 @@ async function btcCommitInscription({ tprv, fromAddress, contentType, content })
   const bRes = await fetch(`${BTC_API}/tx`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: tx.hex });
   if (!bRes.ok) throw new Error(`Commit broadcast failed: ${await bRes.text()}`);
   const commitTxid = (await bRes.text()).trim();
-  return { commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate };
+  return { commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate, revealFee };
 }
 
 // Step 2: build + broadcast reveal tx  (inscription P2TR script-path spend → recipient)
-async function btcRevealInscription({ commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate, recipientAddress }) {
+async function btcRevealInscription({ commitTxid, inscriptionSats, inscriptionP2TR, ephPrivKey, feeRate, revealFee, recipientAddress }) {
   if (!window._btc) throw new Error('Bitcoin library not loaded. Please refresh.');
   const { btc, secp256k1 } = window._btc;
-  const revealFee = Math.ceil(300 * feeRate);
+  // revealFee passed in from btcCommitInscription — calculated from actual content size
   const outputSats = inscriptionSats - revealFee;
   if (outputSats < 546) throw new Error(`Not enough sats for reveal output after fees (${outputSats} < 546 dust limit)`);
 
