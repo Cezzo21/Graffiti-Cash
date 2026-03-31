@@ -1250,11 +1250,28 @@ function App() {
     try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
   });
   const [btcTprv, setBtcTprv] = React.useState(() => localStorage.getItem('btcTprv') || '');
-  const [userInscriptions, setUserInscriptions] = React.useState(() => {
-    try { return JSON.parse(localStorage.getItem('userInscriptions') || '[]'); } catch(e) { return []; }
-  });
+  const [userInscriptions, setUserInscriptions] = React.useState([]);
 
-  function handleInscriptionSaved(inscription) {
+  // Load shared inscriptions from the local API (falls back to localStorage if server not running)
+  React.useEffect(() => {
+    fetch('/api/inscriptions')
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(setUserInscriptions)
+      .catch(() => {
+        try { setUserInscriptions(JSON.parse(localStorage.getItem('userInscriptions') || '[]')); } catch(e) {}
+      });
+  }, []);
+
+  async function handleInscriptionSaved(inscription) {
+    try {
+      const r = await fetch('/api/inscriptions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inscription),
+      });
+      if (r.ok) { setUserInscriptions(prev => [inscription, ...prev]); return; }
+    } catch(e) {}
+    // Fallback: localStorage only
     const updated = [inscription, ...userInscriptions];
     localStorage.setItem('userInscriptions', JSON.stringify(updated));
     setUserInscriptions(updated);
