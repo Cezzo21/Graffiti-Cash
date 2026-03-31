@@ -296,6 +296,95 @@ async function btcRevealInscription({ commitTxid, inscriptionSats, inscriptionP2
 }
 
 
+// ─── PINATA / IPFS STORE ─────────────────────────────────────────────────────
+// Paste your Pinata JWT here (pinata.cloud → API Keys → New Key → Admin → copy JWT)
+const PINATA_JWT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiIzZWUxZTQ1Ny1jYTY0LTQyOTgtYmMyYS0zYmQwYmZjYzhlZDUiLCJlbWFpbCI6IjFhbmRvbmx5cXVlZW5lenpvQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJwaW5fcG9saWN5Ijp7InJlZ2lvbnMiOlt7ImRlc2lyZWRSZXBsaWNhdGlvbkNvdW50IjoxLCJpZCI6IkZSQTEifSx7ImRlc2lyZWRSZXBsaWNhdGlvbkNvdW50IjoxLCJpZCI6Ik5ZQzEifV0sInZlcnNpb24iOjF9LCJtZmFfZW5hYmxlZCI6ZmFsc2UsInN0YXR1cyI6IkFDVElWRSJ9LCJhdXRoZW50aWNhdGlvblR5cGUiOiJzY29wZWRLZXkiLCJzY29wZWRLZXlLZXkiOiI5NWUxYzAxZDQ4MTI4ZWU4ZjY3ZSIsInNjb3BlZEtleVNlY3JldCI6IjBmMzM1Yjc3MWZmMGM4M2YwYjY3MWY4OTIwZDM5NjE0ZjEzODE2NWM3NjkyZGM5ODQ5MTc0ZjA0OTY1YzQxMDciLCJleHAiOjE4MDY0OTY0MDF9.u9DZt_dwoUUBZJu5LpPHx5UIzCzdZp-0lXcm00YRalI'
+const PINATA_API = 'https://api.pinata.cloud'
+const IPFS_GW    = 'https://gateway.pinata.cloud/ipfs'
+const APP_TAG    = 'cryptovault-graffiti'
+
+async function pinataHeaders() {
+  return { Authorization: `Bearer ${PINATA_JWT}` }
+}
+
+// Upload a File object to IPFS, tagged as an unused pool item
+async function pinataUploadPoolItem(file) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('pinataMetadata', JSON.stringify({
+    name: file.name,
+    keyvalues: { app: APP_TAG, role: 'pool', status: 'unused', contentType: file.type || 'application/octet-stream' },
+  }))
+  const r = await fetch(`${PINATA_API}/pinning/pinFileToIPFS`, {
+    method: 'POST', headers: await pinataHeaders(), body: form,
+  })
+  if (!r.ok) throw new Error(`Upload failed: ${await r.text()}`)
+  return (await r.json()).IpfsHash
+}
+
+// Return all unused pool items as [{ cid, name, contentType }]
+async function pinataGetUnusedPool() {
+  const q = new URLSearchParams({
+    status: 'pinned', pageLimit: '1000',
+    'metadata[keyvalues][app][value]': APP_TAG, 'metadata[keyvalues][app][op]': 'eq',
+    'metadata[keyvalues][role][value]': 'pool',   'metadata[keyvalues][role][op]': 'eq',
+    'metadata[keyvalues][status][value]': 'unused','metadata[keyvalues][status][op]': 'eq',
+  })
+  const r = await fetch(`${PINATA_API}/data/pinList?${q}`, { headers: await pinataHeaders() })
+  if (!r.ok) throw new Error(`Pool fetch failed: ${await r.text()}`)
+  const rows = (await r.json()).rows || []
+  return rows.map(row => ({
+    cid: row.ipfs_pin_hash,
+    name: row.metadata?.name || row.ipfs_pin_hash,
+    contentType: row.metadata?.keyvalues?.contentType || 'text/plain',
+  }))
+}
+
+// Mark a pool item CID as used (so it won't be picked again)
+async function pinataMarkUsed(cid) {
+  const r = await fetch(`${PINATA_API}/pinning/hashMetadata`, {
+    method: 'PUT',
+    headers: { ...(await pinataHeaders()), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ipfsPinHash: cid, keyvalues: { status: 'used' } }),
+  })
+  if (!r.ok) throw new Error(`Mark-used failed: ${await r.text()}`)
+}
+
+// Save a completed inscription record to IPFS
+async function pinataSaveInscription(record) {
+  const r = await fetch(`${PINATA_API}/pinning/pinJSONToIPFS`, {
+    method: 'POST',
+    headers: { ...(await pinataHeaders()), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pinataContent: record,
+      pinataMetadata: { name: `inscription-${record.txId.slice(0,8)}`,
+        keyvalues: { app: APP_TAG, role: 'inscription' } },
+    }),
+  })
+  if (!r.ok) throw new Error(`Save inscription failed: ${await r.text()}`)
+  return (await r.json()).IpfsHash
+}
+
+// Fetch all inscription records from IPFS → array sorted newest-first
+async function pinataLoadInscriptions() {
+  const q = new URLSearchParams({
+    status: 'pinned', pageLimit: '1000',
+    'metadata[keyvalues][app][value]': APP_TAG,     'metadata[keyvalues][app][op]': 'eq',
+    'metadata[keyvalues][role][value]': 'inscription','metadata[keyvalues][role][op]': 'eq',
+  })
+  const r = await fetch(`${PINATA_API}/data/pinList?${q}`, { headers: await pinataHeaders() })
+  if (!r.ok) throw new Error(`Load inscriptions failed: ${await r.text()}`)
+  const rows = (await r.json()).rows || []
+  // Fetch each record JSON in parallel
+  const results = await Promise.allSettled(
+    rows.map(row => fetch(`${IPFS_GW}/${row.ipfs_pin_hash}`).then(res => res.json()))
+  )
+  return results
+    .filter(r => r.status === 'fulfilled')
+    .map(r => r.value)
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+}
+
 // ─── SPARKLINE ───────────────────────────────────────────────────────────────
 function Sparkline({ data, color, width=80, height=32 }) {
   if (!data || data.length < 2) return null;
@@ -866,103 +955,136 @@ const INSCRIPTIONS = [
 ];
 
 // ─── GALLERY PAGE ─────────────────────────────────────────────────────────────
-function GalleryPage({ userInscriptions = [] }) {
-  const [filter, setFilter] = React.useState('All');
-  const [selected, setSelected] = React.useState(null);
-  const allInscriptions = [...userInscriptions, ...INSCRIPTIONS];
+function GalleryPage() {
+  const [filter, setFilter]       = React.useState('All');
+  const [selected, setSelected]   = React.useState(null);
+  const [liveIns, setLiveIns]     = React.useState([]);
+  const [loading, setLoading]     = React.useState(true);
+  const [loadErr, setLoadErr]     = React.useState('');
+  const [uploadOpen, setUploadOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    pinataLoadInscriptions()
+      .then(setLiveIns)
+      .catch(e => setLoadErr(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const allInscriptions = [...liveIns, ...INSCRIPTIONS];
   const filtered = allInscriptions.filter(ins =>
     filter === 'Images' ? ins.type.startsWith('image/') :
     filter === 'Text'   ? ins.type.startsWith('text/')  : true
   );
-  const liveCount = userInscriptions.length;
+
+  const IS = {
+    badge:(col)=>({display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:`${col}18`,border:`1px solid ${col}44`,borderRadius:5,fontSize:10,fontWeight:700,color:col,letterSpacing:'.4px'}),
+    uploadBtn:{padding:'7px 16px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer'},
+    card:{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'},
+    preview:{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden',position:'relative'},
+  };
+
+  function renderPreview(ins, large) {
+    if (ins.sourceCid && ins.type.startsWith('image/') && !ins.type.includes('svg')) {
+      return <img src={`${IPFS_GW}/${ins.sourceCid}`} alt={ins.title}
+        style={{width:'100%',height:'100%',objectFit:'cover'}}/>;
+    }
+    if (ins.type === 'image/svg+xml' && ins.content) {
+      return <div style={{width:'100%',height:'100%'}} dangerouslySetInnerHTML={{__html:ins.content}}/>;
+    }
+    return (
+      <div style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',gap:8,width:'100%'}}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" strokeWidth="1.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span style={{fontSize:11,color:'#8b8fa8',textAlign:'center',fontStyle:'italic',lineHeight:1.5,wordBreak:'break-all'}}>
+          {(ins.contentPreview||ins.content||'').slice(0, large?200:70)}{((ins.contentPreview||ins.content||'').length > (large?200:70)) ? '…' : ''}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      {/* Header */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:12}}>
         <div>
           <div style={{fontSize:16,fontWeight:700,color:'#f0f2ff'}}>Graffiti Gallery</div>
           <div style={{fontSize:12,color:'#555874',marginTop:3}}>
-            {INSCRIPTIONS.length} inscriptions permanently etched onto the Bitcoin blockchain
-            {liveCount>0&&<span style={{color:'#f7931a',fontWeight:600}}> · {liveCount} live testnet4</span>}
+            {INSCRIPTIONS.length} archived · {loading ? '…' : liveIns.length} live on Bitcoin Testnet4
           </div>
         </div>
-        <div style={{display:'flex',gap:6}}>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
           {['All','Images','Text'].map(f=>(
             <button key={f} onClick={()=>setFilter(f)}
               style={{padding:'6px 14px',borderRadius:8,border:'1px solid',fontSize:12,fontWeight:500,cursor:'pointer',
                 borderColor:filter===f?'rgba(108,99,255,.4)':'#2a2d3e',
                 background:filter===f?'rgba(108,99,255,.18)':'transparent',
-                color:filter===f?'#a09aff':'#8b8fa8'}}>{f}</button>
+                color:filter===f?'#a09aff':'#8b8fa8'}}>{f}
+            </button>
           ))}
+          <button onClick={()=>setUploadOpen(true)} style={IS.uploadBtn}>+ Add to Pool</button>
         </div>
       </div>
+
+      {/* Loading / error */}
+      {loading && <div style={{textAlign:'center',padding:'40px 0',color:'#555874',fontSize:13}}>Loading inscriptions from IPFS…</div>}
+      {loadErr && <div style={{padding:'10px 14px',background:'#ef444415',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444'}}>{loadErr}</div>}
+
+      {/* Grid */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:14}}>
         {filtered.map(ins=>(
-          <div key={ins.id} onClick={()=>setSelected(ins)}
-            style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'}}>
-            <div style={{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden',position:'relative'}}>
-              {ins.isLive&&(
-                <div style={{position:'absolute',top:8,left:8,background:'#f7931a',color:'#fff',fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:4,letterSpacing:'.5px',zIndex:1}}>TESTNET4</div>
-              )}
-              {ins.type==='image/svg+xml'
-                ? <div style={{width:'100%',height:'100%'}} dangerouslySetInnerHTML={{__html:ins.content}}/>
-                : <div style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',gap:8}}>
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" strokeWidth="1.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                    <span style={{fontSize:11,color:'#8b8fa8',textAlign:'center',fontStyle:'italic',lineHeight:1.5}}>{ins.content.slice(0,70)}…</span>
-                  </div>
-              }
+          <div key={ins.id||ins.txId} onClick={()=>setSelected(ins)} style={IS.card}>
+            <div style={IS.preview}>
+              {ins.isLive && <div style={{position:'absolute',top:8,left:8,zIndex:1,...IS.badge('#f7931a')}}>TESTNET4</div>}
+              {renderPreview(ins, false)}
             </div>
             <div style={{padding:'12px 14px',display:'flex',flexDirection:'column',gap:5}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <span style={{fontSize:11,color:ins.isLive?'#f7931a':'#6c63ff',fontWeight:600}}>
-                  {ins.isLive ? 'LIVE' : `#${ins.inscriptionNumber.toLocaleString()}`}
+                  {ins.isLive ? 'LIVE' : `#${ins.inscriptionNumber?.toLocaleString()}`}
                 </span>
                 <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
-                  background:ins.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
-                  color:ins.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
-                  {ins.type.startsWith('image/')?'Image':'Text'}
+                  background:ins.type?.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
+                  color:ins.type?.startsWith('image/')?'#a09aff':'#22c55e'}}>
+                  {ins.type?.startsWith('image/')?'Image':'Text'}
                 </span>
               </div>
               <div style={{fontSize:13,fontWeight:700,color:'#f0f2ff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{ins.title}</div>
               <div style={{fontSize:11,color:'#555874',lineHeight:1.5,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{ins.description}</div>
               <div style={{display:'flex',justifyContent:'space-between',marginTop:2}}>
-                <span style={{fontSize:10,color:'#555874'}}>{ins.isLive ? 'Pending' : `Block ${ins.blockHeight.toLocaleString()}`}</span>
+                <span style={{fontSize:10,color:'#555874'}}>{ins.isLive ? 'Pending confirmation' : `Block ${ins.blockHeight?.toLocaleString()}`}</span>
                 <span style={{fontSize:10,color:'#555874'}}>{ins.fileSize}</span>
               </div>
             </div>
           </div>
         ))}
+        {!loading && filtered.length === 0 && (
+          <div style={{gridColumn:'1/-1',textAlign:'center',padding:'60px 0',color:'#555874',fontSize:13}}>No inscriptions yet.</div>
+        )}
       </div>
+
+      {/* Detail modal */}
       {selected&&(
-        <div onClick={()=>setSelected(null)}
-          style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}}>
-          <div onClick={e=>e.stopPropagation()}
-            style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:18,width:'100%',maxWidth:800,maxHeight:'90vh',overflow:'auto',position:'relative',display:'flex'}}>
-            <button onClick={()=>setSelected(null)} style={{position:'absolute',top:12,right:12,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:1}}>
-              <CloseIco/>
-            </button>
-            <div style={{width:300,minWidth:300,background:'#0a0b0f',borderRight:'1px solid #2a2d3e',display:'flex',alignItems:'center',justifyContent:'center',padding:16,minHeight:300}}>
-              {selected.type==='image/svg+xml'
-                ? <div dangerouslySetInnerHTML={{__html:selected.content}}/>
-                : <pre style={{fontSize:12,color:'#8b8fa8',lineHeight:1.7,whiteSpace:'pre-wrap',fontFamily:'monospace',margin:0}}>{selected.content}</pre>
-              }
+        <div onClick={()=>setSelected(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:18,width:'100%',maxWidth:800,maxHeight:'90vh',overflow:'auto',position:'relative',display:'flex'}}>
+            <button onClick={()=>setSelected(null)} style={{position:'absolute',top:12,right:12,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:1}}><CloseIco/></button>
+            <div style={{width:300,minWidth:300,background:'#0a0b0f',borderRight:'1px solid #2a2d3e',display:'flex',alignItems:'center',justifyContent:'center',padding:16,minHeight:300,overflow:'hidden'}}>
+              {renderPreview(selected, true)}
             </div>
             <div style={{flex:1,padding:'28px 22px 22px',display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
-              <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 {selected.isLive
-                  ? <span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(247,147,26,.15)',color:'#f7931a',border:'1px solid rgba(247,147,26,.3)',letterSpacing:'.5px'}}>LIVE TESTNET4</span>
-                  : <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{selected.inscriptionNumber.toLocaleString()}</span>
-                }
+                  ? <span style={IS.badge('#f7931a')}>LIVE TESTNET4</span>
+                  : <span style={{fontSize:11,color:'#6c63ff',fontWeight:600}}>#{selected.inscriptionNumber?.toLocaleString()}</span>}
                 <span style={{fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:5,
-                  background:selected.type.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
-                  color:selected.type.startsWith('image/')?'#a09aff':'#22c55e'}}>
-                  {selected.type.startsWith('image/')?'Image':'Text'}
+                  background:selected.type?.startsWith('image/')?'rgba(108,99,255,.18)':'rgba(34,197,94,.14)',
+                  color:selected.type?.startsWith('image/')?'#a09aff':'#22c55e'}}>
+                  {selected.type?.startsWith('image/')?'Image':'Text'}
                 </span>
               </div>
               <div style={{fontSize:17,fontWeight:700,color:'#f0f2ff'}}>{selected.title}</div>
               <div style={{fontSize:12,color:'#8b8fa8',lineHeight:1.6}}>{selected.description}</div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,padding:'12px 0',borderTop:'1px solid #2a2d3e',borderBottom:'1px solid #2a2d3e'}}>
                 {[
-                  ['Block Height', selected.isLive ? 'Pending' : selected.blockHeight.toLocaleString()],
+                  ['Block Height', selected.isLive ? 'Pending' : selected.blockHeight?.toLocaleString()],
                   ['File Size', selected.fileSize],
                   ['Date', fDate(selected.date)],
                   ['Type', selected.type],
@@ -970,34 +1092,169 @@ function GalleryPage({ userInscriptions = [] }) {
                   <div key={l}><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:2}}>{l}</div><div style={{fontSize:12,color:'#f0f2ff'}}>{v}</div></div>
                 ))}
               </div>
+              {selected.sourceCid && (
+                <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>IPFS Source</div>
+                  <div style={{display:'flex',alignItems:'center',gap:8,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px'}}>
+                    <span style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',flex:1,wordBreak:'break-all'}}>{selected.sourceCid}</span>
+                    <a href={`${IPFS_GW}/${selected.sourceCid}`} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:'#f7931a',fontWeight:600,textDecoration:'none',flexShrink:0}}>↗</a>
+                  </div>
+                </div>
+              )}
               <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Inscribed By</div>
                 <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.inscribedBy}</div>
               </div>
-              {selected.isLive && selected.recipient && selected.recipient !== selected.inscribedBy && (
+              {selected.recipient && selected.recipient !== selected.inscribedBy && (
                 <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Recipient</div>
                   <div style={{fontSize:11,color:'#f7931a',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.recipient}</div>
                 </div>
               )}
-              {selected.isLive ? (
-                <React.Fragment>
-                  <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Commit Transaction</div>
-                    <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.commitTxId}</div>
-                    <a href={`https://mempool.space/testnet4/tx/${selected.commitTxId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
-                  </div>
-                  <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Reveal Transaction</div>
-                    <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.txId}</div>
-                    <a href={`https://mempool.space/testnet4/tx/${selected.txId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
-                  </div>
-                </React.Fragment>
-              ) : (
-                <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Transaction ID</div>
-                  <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.txId}</div>
+              {selected.commitTxId && (
+                <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Commit Transaction</div>
+                  <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.commitTxId}</div>
+                  <a href={`https://mempool.space/testnet4/tx/${selected.commitTxId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
                 </div>
               )}
+              <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Reveal Transaction</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.txId}</div>
+                {selected.isLive && <a href={`https://mempool.space/testnet4/tx/${selected.txId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>}
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      <UploadToPoolModal open={uploadOpen} onClose={()=>setUploadOpen(false)}/>
+    </div>
+  );
+}
+
+// Strip all identifying metadata from a file before it touches IPFS.
+// • Raster images (JPEG/PNG/WebP/GIF): re-drawn through Canvas → pixel data only, EXIF gone.
+// • SVG/XML: <metadata> and author elements removed via DOM parser.
+// • Text/JSON: returned as-is with a generic filename (no original name).
+async function stripMetadata(file) {
+  const type = file.type || 'application/octet-stream';
+
+  // Raster images — canvas re-encode strips all EXIF
+  if (type.startsWith('image/') && !type.includes('svg')) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(blob => {
+          resolve(new File([blob], 'image.png', { type: 'image/png' }));
+        }, 'image/png');
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not decode image')); };
+      img.src = url;
+    });
+  }
+
+  // SVG — strip <metadata>, <title>, <desc>, and RDF/Dublin Core author nodes
+  if (type.includes('svg')) {
+    const text = await file.text();
+    const doc  = new DOMParser().parseFromString(text, 'image/svg+xml');
+    ['metadata','title','desc'].forEach(tag =>
+      doc.querySelectorAll(tag).forEach(n => n.remove())
+    );
+    return new File([new XMLSerializer().serializeToString(doc)], 'image.svg', { type: 'image/svg+xml' });
+  }
+
+  // Text / JSON — no embedded metadata; just anonymise the filename
+  const ext = type === 'application/json' ? 'json' : 'txt';
+  return new File([await file.arrayBuffer()], `content.${ext}`, { type });
+}
+
+// ─── UPLOAD TO POOL MODAL ─────────────────────────────────────────────────────
+function UploadToPoolModal({ open, onClose }) {
+  const [file, setFile]           = React.useState(null);
+  const [preview, setPreview]     = React.useState(null);
+  const [uploading, setUploading] = React.useState(false);
+  const [error, setError]         = React.useState('');
+  const [done, setDone]           = React.useState('');
+
+  function handleClose() {
+    if (preview) URL.revokeObjectURL(preview);
+    setFile(null); setPreview(null); setError(''); setDone('');
+    onClose();
+  }
+
+  function handleFileChange(e) {
+    const f = e.target.files[0] || null;
+    if (preview) URL.revokeObjectURL(preview);
+    setFile(f);
+    setPreview(f && f.type.startsWith('image/') ? URL.createObjectURL(f) : null);
+    setError(''); setDone('');
+  }
+
+  async function handleUpload() {
+    if (!file) return;
+    setUploading(true); setError(''); setDone('');
+    try {
+      if (PINATA_JWT === 'YOUR_PINATA_JWT_HERE')
+        throw new Error('Pinata JWT not configured. Paste your JWT into the PINATA_JWT constant in index.html.');
+      const clean = await stripMetadata(file);
+      const cid   = await pinataUploadPoolItem(clean);
+      setDone(`Uploaded · CID: ${cid}`);
+      if (preview) { URL.revokeObjectURL(preview); setPreview(null); }
+      setFile(null);
+    } catch(e) { setError(e.message); }
+    finally { setUploading(false); }
+  }
+
+  if (!open) return null;
+  const IS = {
+    overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
+    box:    {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:440,padding:28,display:'flex',flexDirection:'column',gap:16},
+    priBtn: {padding:'12px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer'},
+    secBtn: {padding:'12px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'},
+  };
+  return (
+    <div style={IS.overlay} onClick={handleClose}>
+      <div style={IS.box} onClick={e=>e.stopPropagation()}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{fontSize:17,fontWeight:800,color:'#f0f2ff'}}>Add Media to Pool</div>
+          <button onClick={handleClose} style={{background:'transparent',border:'none',color:'#555874',cursor:'pointer',display:'flex'}}><CloseIco/></button>
+        </div>
+        <div style={{fontSize:12,color:'#555874',lineHeight:1.6}}>
+          Media uploaded here enters the pool for Bitcoin Ordinals inscriptions. It may be randomly selected and permanently etched onto the blockchain by any user.
+        </div>
+        <div style={{display:'flex',gap:10,padding:'10px 12px',background:'#22c55e10',border:'1px solid #22c55e30',borderRadius:10}}>
+          <span style={{flexShrink:0}}>🛡</span>
+          <div style={{fontSize:11,color:'#22c55e',lineHeight:1.6}}>
+            <strong>Metadata stripped automatically.</strong> EXIF data (GPS, camera model, author, timestamps) is removed before upload. Your identity is not embedded in the file on IPFS.
+          </div>
+        </div>
+        <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12,padding:'20px',background:'#12141a',
+          border:`2px dashed ${file?'#f7931a':'#2a2d3e'}`,borderRadius:12,cursor:'pointer',textAlign:'center'}}>
+          <input type="file" accept="image/*,text/*,application/json,image/svg+xml"
+            onChange={handleFileChange} style={{display:'none'}}/>
+          {preview
+            ? <img src={preview} alt="preview" style={{maxHeight:140,maxWidth:'100%',borderRadius:8,objectFit:'contain'}}/>
+            : <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={file?'#f7931a':'#555874'} strokeWidth="1.5" strokeLinecap="round">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+          }
+          <span style={{fontSize:13,color:file?'#f7931a':'#555874',fontWeight:file?600:400}}>
+            {file ? file.name : 'Click to choose a file'}
+          </span>
+          {file && <span style={{fontSize:11,color:'#555874'}}>{file.type||'unknown'} · {(file.size/1024).toFixed(1)} KB · metadata stripped on upload</span>}
+        </label>
+        {error && <div style={{padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444'}}>{error}</div>}
+        {done  && <div style={{padding:'10px 12px',background:'#22c55e18',border:'1px solid #22c55e33',borderRadius:10,fontSize:12,color:'#22c55e',wordBreak:'break-all'}}>{done}</div>}
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={handleClose} style={{...IS.secBtn,flex:1}}>Cancel</button>
+          <button onClick={handleUpload} disabled={!file||uploading} style={{...IS.priBtn,flex:2,opacity:(!file||uploading)?0.6:1}}>
+            {uploading ? 'Stripping metadata & uploading…' : 'Upload to IPFS'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1250,32 +1507,6 @@ function App() {
     try { const s = localStorage.getItem('importedWallet'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
   });
   const [btcTprv, setBtcTprv] = React.useState(() => localStorage.getItem('btcTprv') || '');
-  const [userInscriptions, setUserInscriptions] = React.useState([]);
-
-  // Load shared inscriptions from the local API (falls back to localStorage if server not running)
-  React.useEffect(() => {
-    fetch('/api/inscriptions')
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(setUserInscriptions)
-      .catch(() => {
-        try { setUserInscriptions(JSON.parse(localStorage.getItem('userInscriptions') || '[]')); } catch(e) {}
-      });
-  }, []);
-
-  async function handleInscriptionSaved(inscription) {
-    try {
-      const r = await fetch('/api/inscriptions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(inscription),
-      });
-      if (r.ok) { setUserInscriptions(prev => [inscription, ...prev]); return; }
-    } catch(e) {}
-    // Fallback: localStorage only
-    const updated = [inscription, ...userInscriptions];
-    localStorage.setItem('userInscriptions', JSON.stringify(updated));
-    setUserInscriptions(updated);
-  }
 
   function handleImportWallet(wallet) {
     localStorage.setItem('importedWallet', JSON.stringify(wallet));
@@ -1362,7 +1593,7 @@ function App() {
             </div>
           )}
           {page==='history'&&<TxHistory txs={importedWallet?.txs}/>}
-          {page==='gallery'&&<GalleryPage userInscriptions={userInscriptions}/>}
+          {page==='gallery'&&<GalleryPage/>}
           {page==='nfts'&&<Placeholder title="NFT Collection" sub="Your NFTs will appear here." icon="🖼"/>}
           {page==='settings'&&<SettingsPage
             importedWallet={importedWallet}
@@ -1386,7 +1617,6 @@ function App() {
       <InscribeModal open={inscribeOpen} onClose={()=>setInscribeOpen(false)}
         btcAddress={importedWallet?.address}
         btcTprv={btcTprv}
-        onInscriptionSaved={handleInscriptionSaved}
       />
     </div>
   );
@@ -1404,83 +1634,97 @@ function Placeholder({ title, sub, icon }) {
 
 
 // ─── INSCRIBE MODAL ──────────────────────────────────────────────────────────
-// Steps: 1=content input, 2=review/fees, 3=committing, 4=revealing, 5=success
-function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved }) {
+// Steps: 1=picking random pool item + recipient, 2=review/fees, 3=committing, 4=revealing, 5=success
+function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
   const [step, setStep]                     = React.useState(1);
-  const [inputMode, setInputMode]           = React.useState('text');  // 'text' | 'ipfs'
-  const [contentType, setContentType]       = React.useState('text/plain;charset=utf-8');
-  const [textContent, setTextContent]       = React.useState('');
-  const [ipfsCid, setIpfsCid]               = React.useState('');
-  const [ipfsFetching, setIpfsFetching]     = React.useState(false);
+  const [poolItem, setPoolItem]             = React.useState(null);   // { cid, name, contentType }
+  const [content, setContent]               = React.useState('');     // fetched text content
+  const [contentBytes, setContentBytes]     = React.useState(null);   // Uint8Array for binary
+  const [picking, setPicking]               = React.useState(false);  // loading random item
   const [recipientAddress, setRecipientAddress] = React.useState('');
   const [feeInfo, setFeeInfo]               = React.useState(null);
   const [error, setError]                   = React.useState('');
   const [commitTxid, setCommitTxid]         = React.useState('');
   const [revealTxid, setRevealTxid]         = React.useState('');
 
-  // Default recipient to wallet address each time the modal opens
+  // When the modal opens: reset state, default recipient, then pick a random pool item
   React.useEffect(() => {
-    if (open) setRecipientAddress(btcAddress || '');
-  }, [open, btcAddress]);
+    if (!open) return;
+    setStep(1); setPoolItem(null); setContent(''); setContentBytes(null);
+    setFeeInfo(null); setError(''); setCommitTxid(''); setRevealTxid('');
+    setRecipientAddress(btcAddress || '');
+    pickRandomPoolItem();
+  }, [open]);
 
-  React.useEffect(() => {
-    if (step !== 2 || !textContent) return;
-    const bytes = new TextEncoder().encode(textContent);
-    btcEstimateInscriptionFees(bytes).then(setFeeInfo).catch(()=>{});
-  }, [step, textContent]);
-
-  async function handleFetchIpfs() {
-    if (!ipfsCid.trim()) return;
-    setIpfsFetching(true); setError('');
+  async function pickRandomPoolItem() {
+    setPicking(true); setError('');
     try {
-      const resp = await fetch(`https://ipfs.io/ipfs/${ipfsCid.trim()}`);
-      if (!resp.ok) throw new Error(`Gateway returned ${resp.status}`);
-      const ct = (resp.headers.get('content-type') || 'text/plain').split(';')[0].trim();
-      setContentType(ct.includes('text') || ct === 'application/json' ? ct : 'text/plain;charset=utf-8');
-      setTextContent(await resp.text());
-      setInputMode('text');
-    } catch(e) { setError(`IPFS fetch failed: ${e.message}`); }
-    finally { setIpfsFetching(false); }
+      if (PINATA_JWT === 'YOUR_PINATA_JWT_HERE') throw new Error('Pinata JWT not configured. Edit the PINATA_JWT constant in index.html.');
+      const pool = await pinataGetUnusedPool();
+      if (!pool.length) throw new Error('The inscription pool is empty. Upload some media via the Gallery first.');
+      const item = pool[Math.floor(Math.random() * pool.length)];
+      // Fetch the actual content from IPFS
+      const resp = await fetch(`${IPFS_GW}/${item.cid}`);
+      if (!resp.ok) throw new Error(`Could not fetch content from IPFS (${resp.status})`);
+      const ct = item.contentType || (resp.headers.get('content-type') || 'text/plain').split(';')[0].trim();
+      if (ct.startsWith('text/') || ct === 'application/json') {
+        setContent(await resp.text());
+      } else {
+        const buf = await resp.arrayBuffer();
+        setContentBytes(new Uint8Array(buf));
+      }
+      setPoolItem({ ...item, contentType: ct });
+      // Pre-fetch fee estimate
+      const bytes = ct.startsWith('text/') || ct === 'application/json'
+        ? new TextEncoder().encode(await (await fetch(`${IPFS_GW}/${item.cid}`)).text())
+        : new Uint8Array(await (await fetch(`${IPFS_GW}/${item.cid}`)).arrayBuffer());
+      btcEstimateInscriptionFees(bytes).then(setFeeInfo).catch(()=>{});
+    } catch(e) { setError(e.message); }
+    finally { setPicking(false); }
   }
 
   function handleReview() {
     setError('');
     if (!btcTprv) { setError('No signing key. Import a TPRV key in Settings first.'); return; }
     if (!btcAddress) { setError('No wallet address found. Check Settings.'); return; }
-    if (!textContent.trim()) { setError('Enter some content to inscribe.'); return; }
+    if (!poolItem) { setError('No pool item loaded yet.'); return; }
     if (!recipientAddress.trim()) { setError('Enter a recipient address.'); return; }
     setStep(2);
   }
 
   async function handleInscribe() {
     setError(''); setStep(3);
+    const inscribeContent = contentBytes || content;
     let cd;
     try {
-      cd = await btcCommitInscription({ tprv: btcTprv, fromAddress: btcAddress, contentType, content: textContent });
+      cd = await btcCommitInscription({ tprv: btcTprv, fromAddress: btcAddress, contentType: poolItem.contentType, content: inscribeContent });
       setCommitTxid(cd.commitTxid);
     } catch(e) { setError(e.message); setStep(2); return; }
     setStep(4);
     try {
       const { revealTxid: rtxid } = await btcRevealInscription({ ...cd, recipientAddress });
       setRevealTxid(rtxid);
-      // Save inscription to gallery
-      if (onInscriptionSaved) {
-        const bytes = new TextEncoder().encode(textContent);
-        onInscriptionSaved({
-          id: `live_${rtxid}`,
-          type: contentType,
-          title: textContent.slice(0, 40) + (textContent.length > 40 ? '…' : ''),
-          description: `Inscribed via Bitcoin Ordinals on Testnet4`,
-          content: textContent,
-          inscribedBy: btcAddress,
-          recipient: recipientAddress,
-          txId: rtxid,
-          commitTxId: cd.commitTxid,
-          date: new Date().toISOString().slice(0, 10),
-          fileSize: bytes.length < 1024 ? `${bytes.length} B` : `${(bytes.length/1024).toFixed(1)} KB`,
-          isLive: true,
-        });
-      }
+      // Mark pool item as used + save inscription record to IPFS
+      const bytes = contentBytes || new TextEncoder().encode(content);
+      const record = {
+        id: `live_${rtxid}`,
+        type: poolItem.contentType,
+        title: poolItem.name || poolItem.cid.slice(0,16),
+        description: 'Inscribed via Bitcoin Ordinals on Testnet4',
+        contentPreview: typeof content === 'string' ? content.slice(0, 300) : '',
+        sourceCid: poolItem.cid,
+        inscribedBy: btcAddress,
+        recipient: recipientAddress,
+        txId: rtxid,
+        commitTxId: cd.commitTxid,
+        date: new Date().toISOString().slice(0, 10),
+        fileSize: bytes.length < 1024 ? `${bytes.length} B` : `${(bytes.length/1024).toFixed(1)} KB`,
+        isLive: true,
+      };
+      await Promise.allSettled([
+        pinataMarkUsed(poolItem.cid),
+        pinataSaveInscription(record),
+      ]);
       setStep(5);
     } catch(e) {
       setError(`Commit succeeded (${cd.commitTxid.slice(0,12)}…) but reveal failed: ${e.message}`);
@@ -1488,57 +1732,44 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
     }
   }
 
-  function handleClose() {
-    setStep(1); setInputMode('text'); setTextContent(''); setIpfsCid('');
-    setFeeInfo(null); setError(''); setCommitTxid(''); setRevealTxid('');
-    onClose();
-  }
+  function handleClose() { onClose(); }
 
   if (!open) return null;
-  const byteCount = new TextEncoder().encode(textContent).length;
   const ownWallet = recipientAddress === btcAddress;
-  const IS = {  // inline styles
-    overlay: {position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
-    box:     {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
-    hdr:     {display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4},
-    title:   {fontSize:17,fontWeight:800,color:'#f0f2ff'},
-    closeBtn:{background:'transparent',border:'none',color:'#555874',cursor:'pointer',padding:4,display:'flex'},
-    badge:   (col)=>({display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'6px 12px',background:`${col}12`,border:`1px solid ${col}33`,borderRadius:8}),
-    tabs:    {display:'flex',gap:6,background:'#12141a',borderRadius:10,padding:4},
-    tab:     (active)=>({flex:1,padding:'8px 12px',background:active?'#22263a':'transparent',border:'none',color:active?'#f0f2ff':'#555874',fontSize:13,fontWeight:600,borderRadius:8,cursor:'pointer'}),
-    lbl:     {display:'block',fontSize:11,fontWeight:600,color:'#8b8fa8',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'},
-    inp:     {width:'100%',padding:'10px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,boxSizing:'border-box'},
-    ta:      {width:'100%',minHeight:130,padding:'12px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:12,fontFamily:'monospace',resize:'vertical',boxSizing:'border-box',lineHeight:1.5},
-    sel:     {width:'100%',padding:'10px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,cursor:'pointer'},
-    warn:    {padding:'10px 12px',background:'#f59e0b18',border:'1px solid #f59e0b33',borderRadius:10,fontSize:12,color:'#f59e0b',lineHeight:1.4},
-    err:     {padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444',lineHeight:1.4},
-    priBtn:  {width:'100%',padding:'13px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer'},
-    secBtn:  {flex:1,padding:'13px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'},
-    card:    {background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:10},
-    row:     {display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12},
-    div:     {height:1,background:'#2a2d3e'},
-    prev:    {background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,padding:'10px 14px'},
-    prevLbl: {fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px',marginBottom:8},
-    prevTxt: {fontSize:11,color:'#8b8fa8',fontFamily:'monospace',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',maxHeight:100,overflow:'auto'},
-    proc:    {display:'flex',flexDirection:'column',alignItems:'center',gap:16,padding:'24px 0',textAlign:'center'},
-    spin:    {width:40,height:40,border:'3px solid #2a2d3e',borderTop:'3px solid #f7931a',borderRadius:'50%',animation:'spin .8s linear infinite'},
-    succ:    {display:'flex',flexDirection:'column',alignItems:'center',gap:14,textAlign:'center'},
-    succIco: {width:64,height:64,background:'#22c55e18',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center'},
-    txBox:   {width:'100%',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:'12px 14px',display:'flex',flexDirection:'column',gap:6,textAlign:'left'},
-    txLbl:   {fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px'},
-    txVal:   {fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.5},
-    extLink: {fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'},
+  const byteCount = contentBytes ? contentBytes.length : new TextEncoder().encode(content).length;
+  const IS = {
+    overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
+    box:    {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
+    hdr:    {display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4},
+    badge:  (col)=>({display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'6px 12px',background:`${col}12`,border:`1px solid ${col}33`,borderRadius:8}),
+    lbl:    {display:'block',fontSize:11,fontWeight:600,color:'#8b8fa8',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'},
+    inp:    {width:'100%',padding:'10px 14px',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,color:'#f0f2ff',fontSize:13,boxSizing:'border-box',fontFamily:'monospace'},
+    warn:   {padding:'10px 12px',background:'#f59e0b18',border:'1px solid #f59e0b33',borderRadius:10,fontSize:12,color:'#f59e0b',lineHeight:1.4},
+    err:    {padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444',lineHeight:1.4},
+    priBtn: {width:'100%',padding:'13px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer'},
+    secBtn: {flex:1,padding:'13px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'},
+    card:   {background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:16,display:'flex',flexDirection:'column',gap:10},
+    row:    {display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12},
+    div:    {height:1,background:'#2a2d3e'},
+    proc:   {display:'flex',flexDirection:'column',alignItems:'center',gap:16,padding:'24px 0',textAlign:'center'},
+    spin:   {width:40,height:40,border:'3px solid #2a2d3e',borderTop:'3px solid #f7931a',borderRadius:'50%',animation:'spin .8s linear infinite'},
+    succ:   {display:'flex',flexDirection:'column',alignItems:'center',gap:14,textAlign:'center'},
+    succIco:{width:64,height:64,background:'#22c55e18',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center'},
+    txBox:  {width:'100%',background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,padding:'12px 14px',display:'flex',flexDirection:'column',gap:6,textAlign:'left'},
+    txLbl:  {fontSize:10,fontWeight:600,color:'#555874',textTransform:'uppercase',letterSpacing:'.5px'},
+    txVal:  {fontSize:11,color:'#8b8fa8',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.5},
+    extLink:{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'},
   };
 
   return (
     <div style={IS.overlay} onClick={handleClose}>
       <div style={IS.box} onClick={e=>e.stopPropagation()}>
         <div style={IS.hdr}>
-          <div style={IS.title}>Inscribe on Bitcoin</div>
-          <button style={IS.closeBtn} onClick={handleClose}><CloseIco/></button>
+          <div style={{fontSize:17,fontWeight:800,color:'#f0f2ff'}}>Inscribe on Bitcoin</div>
+          <button onClick={handleClose} style={{background:'transparent',border:'none',color:'#555874',cursor:'pointer',padding:4,display:'flex'}}><CloseIco/></button>
         </div>
 
-        {/* Step 1: Content input */}
+        {/* Step 1: Random pick preview + recipient */}
         {step===1&&(
           <React.Fragment>
             <div style={IS.badge('#f7931a')}>
@@ -1546,56 +1777,52 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
               <span style={{fontSize:11,color:'#f7931a',fontWeight:600,letterSpacing:'.5px'}}>BITCOIN ORDINALS — TESTNET4</span>
             </div>
 
-            <div style={IS.tabs}>
-              <button style={IS.tab(inputMode==='text')} onClick={()=>setInputMode('text')}>Text / Code</button>
-              <button style={IS.tab(inputMode==='ipfs')} onClick={()=>setInputMode('ipfs')}>Fetch from IPFS</button>
-            </div>
-
-            {inputMode==='ipfs'&&(
-              <div>
-                <label style={IS.lbl}>IPFS CID</label>
-                <div style={{display:'flex',gap:8}}>
-                  <input value={ipfsCid} onChange={e=>{setIpfsCid(e.target.value);setError('')}}
-                    placeholder="Qm... or bafy..." style={{...IS.inp,flex:1,fontFamily:'monospace'}} spellCheck={false}/>
-                  <button onClick={handleFetchIpfs} disabled={ipfsFetching||!ipfsCid.trim()}
-                    style={{...IS.secBtn,padding:'10px 16px',width:'auto'}}>
-                    {ipfsFetching?'…':'Fetch'}
-                  </button>
-                </div>
-                <div style={{marginTop:6,fontSize:11,color:'#555874'}}>Content will be fetched via ipfs.io and shown below for review.</div>
-              </div>
-            )}
-
-            <div>
-              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
-                <label style={IS.lbl}>Content</label>
-                <span style={{fontSize:11,color:byteCount>4096?'#ef4444':'#555874'}}>{byteCount.toLocaleString()} bytes</span>
-              </div>
-              <textarea value={textContent} onChange={e=>{setTextContent(e.target.value);setError('')}}
-                placeholder={'Enter text, JSON, SVG…\n\nExample:\nHello, Bitcoin!'}
-                style={IS.ta} spellCheck={false}/>
-            </div>
-
-            <div>
-              <label style={IS.lbl}>Content Type</label>
-              <select value={contentType} onChange={e=>setContentType(e.target.value)} style={IS.sel}>
-                <option value="text/plain;charset=utf-8">text/plain</option>
-                <option value="text/html;charset=utf-8">text/html</option>
-                <option value="application/json">application/json</option>
-                <option value="image/svg+xml">image/svg+xml</option>
-              </select>
+            {/* Pool item preview */}
+            <div style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:12,minHeight:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden',gap:10,padding:12}}>
+              {picking && (
+                <React.Fragment>
+                  <div style={IS.spin}/>
+                  <div style={{fontSize:12,color:'#555874'}}>Picking a random inscription from the pool…</div>
+                </React.Fragment>
+              )}
+              {!picking && poolItem && (
+                <React.Fragment>
+                  <div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',alignSelf:'flex-start'}}>Your Inscription</div>
+                  {poolItem.contentType.startsWith('image/') && !poolItem.contentType.includes('svg') && (
+                    <img src={`${IPFS_GW}/${poolItem.cid}`} alt={poolItem.name} style={{maxHeight:160,maxWidth:'100%',borderRadius:8,objectFit:'contain'}}/>
+                  )}
+                  {poolItem.contentType.includes('svg') && content && (
+                    <div style={{width:'100%',maxHeight:160,overflow:'hidden'}} dangerouslySetInnerHTML={{__html:content}}/>
+                  )}
+                  {(poolItem.contentType.startsWith('text/') || poolItem.contentType === 'application/json') && (
+                    <pre style={{fontSize:11,color:'#a0a4bb',fontFamily:'monospace',margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',maxHeight:120,overflow:'auto',alignSelf:'stretch'}}>
+                      {content.slice(0,300)}{content.length>300?'\n…':''}
+                    </pre>
+                  )}
+                  <div style={{alignSelf:'stretch',display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:4}}>
+                    <span style={{fontSize:11,color:'#555874',fontFamily:'monospace'}}>{poolItem.name}</span>
+                    <span style={{fontSize:10,color:'#555874'}}>{byteCount.toLocaleString()} bytes</span>
+                  </div>
+                </React.Fragment>
+              )}
+              {!picking && !poolItem && !error && (
+                <div style={{fontSize:12,color:'#555874'}}>No pool item loaded.</div>
+              )}
             </div>
 
             <div>
               <label style={IS.lbl}>Recipient Address</label>
               <input value={recipientAddress} onChange={e=>{setRecipientAddress(e.target.value);setError('')}}
-                placeholder="tb1q..." style={{...IS.inp,fontFamily:'monospace'}} spellCheck={false}/>
-              <div style={{marginTop:6,fontSize:11,color:'#555874'}}>The inscription will be sent to this address. Defaults to your own wallet.</div>
+                placeholder="tb1q…" style={IS.inp} spellCheck={false}/>
+              <div style={{marginTop:6,fontSize:11,color:'#555874'}}>Who receives the inscription. Defaults to your own wallet.</div>
             </div>
 
-            {!btcTprv&&<div style={IS.warn}>⚠️ No signing key configured. Go to <strong>Settings</strong> to import a TPRV key.</div>}
-            {error&&<div style={IS.err}>{error}</div>}
-            <button onClick={handleReview} style={IS.priBtn}>Review Inscription →</button>
+            {!btcTprv && <div style={IS.warn}>⚠️ No signing key. Go to <strong>Settings</strong> to import a TPRV key.</div>}
+            {error && <div style={IS.err}>{error}</div>}
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={pickRandomPoolItem} disabled={picking} style={{...IS.secBtn,width:'auto',padding:'13px 16px',flexShrink:0}}>↺ Re-roll</button>
+              <button onClick={handleReview} disabled={picking||!poolItem} style={{...IS.priBtn,flex:1,width:'auto',opacity:(picking||!poolItem)?0.5:1}}>Review →</button>
+            </div>
           </React.Fragment>
         )}
 
@@ -1608,29 +1835,26 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
             </div>
             <div style={IS.card}>
               {[
-                ['Content type', contentType],
-                ['Size', `${byteCount.toLocaleString()} bytes`],
+                ['Content type', poolItem?.contentType],
+                ['IPFS source',  poolItem?.cid],
+                ['Size',         `${byteCount.toLocaleString()} bytes`],
                 null,
                 ['Commit fee',  feeInfo ? `~${feeInfo.commitFee.toLocaleString()} sats` : '…'],
                 ['Reveal fee',  feeInfo ? `~${feeInfo.revealFee.toLocaleString()} sats` : '…'],
                 ['Total cost',  feeInfo ? `~${feeInfo.totalNeeded.toLocaleString()} sats` : '…'],
                 null,
-                ['From', btcAddress],
-                ['Recipient', recipientAddress],
-                ['Network', 'Bitcoin Testnet4'],
+                ['From',       btcAddress],
+                ['Recipient',  recipientAddress],
+                ['Network',    'Bitcoin Testnet4'],
               ].map((r,i) => r===null
                 ? <div key={i} style={IS.div}/>
                 : <div key={i} style={IS.row}>
                     <span style={{fontSize:12,color:'#555874',flexShrink:0,paddingTop:1}}>{r[0]}</span>
-                    <span style={{fontSize:12,fontWeight:500,textAlign:'right',wordBreak:'break-all',
-                      fontFamily:(r[0]==='From'||r[0]==='Recipient')?'monospace':undefined,
+                    <span style={{fontSize:11,fontWeight:500,textAlign:'right',wordBreak:'break-all',maxWidth:'60%',
+                      fontFamily:['IPFS source','From','Recipient'].includes(r[0])?'monospace':undefined,
                       color:r[0]==='Recipient'?(ownWallet?'#22c55e':'#f7931a'):'#f0f2ff'}}>{r[1]}</span>
                   </div>
               )}
-            </div>
-            <div style={IS.prev}>
-              <div style={IS.prevLbl}>Content preview</div>
-              <pre style={IS.prevTxt}>{textContent.slice(0,300)}{textContent.length>300?'\n…':''}</pre>
             </div>
             {error&&<div style={IS.err}>{error}</div>}
             <div style={{display:'flex',gap:10}}>
@@ -1645,9 +1869,7 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
           <div style={IS.proc}>
             <div style={IS.spin}/>
             <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Broadcasting Commit Transaction…</div>
-            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>
-              Sending BTC to the inscription address. This locks the content on-chain.
-            </div>
+            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>Sending BTC to the inscription address. This locks the content on-chain.</div>
           </div>
         )}
 
@@ -1656,15 +1878,8 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
           <div style={IS.proc}>
             <div style={IS.spin}/>
             <div style={{fontSize:15,fontWeight:700,color:'#f0f2ff'}}>Broadcasting Reveal Transaction…</div>
-            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>
-              Spending the inscription output. This reveals your content as an Ordinal.
-            </div>
-            {commitTxid&&(
-              <div style={IS.txBox}>
-                <div style={IS.txLbl}>Commit TX</div>
-                <div style={IS.txVal}>{commitTxid}</div>
-              </div>
-            )}
+            <div style={{fontSize:12,color:'#555874',maxWidth:300,lineHeight:1.5}}>Spending the inscription output. This reveals your content as an Ordinal.</div>
+            {commitTxid&&<div style={IS.txBox}><div style={IS.txLbl}>Commit TX</div><div style={IS.txVal}>{commitTxid}</div></div>}
           </div>
         )}
 
@@ -1672,37 +1887,23 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv, onInscriptionSaved 
         {step===5&&(
           <div style={IS.succ}>
             <div style={IS.succIco}>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round">
-                <polyline points="20 6 9 17 4 12"/>
-              </svg>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
             </div>
             <div style={{fontSize:20,fontWeight:700,color:'#f0f2ff'}}>Inscription Created!</div>
-            <div style={{fontSize:13,color:'#8b8fa8',maxWidth:320}}>Your content has been inscribed on Bitcoin Testnet4 via Ordinals.</div>
-
+            <div style={{fontSize:13,color:'#8b8fa8',maxWidth:320}}>The inscription is live on Bitcoin Testnet4 and saved to the public gallery via IPFS.</div>
             <div style={{...IS.txBox,borderColor:ownWallet?'#22c55e33':'#f7931a33'}}>
               <div style={IS.txLbl}>Recipient</div>
               <div style={{...IS.txVal,color:ownWallet?'#22c55e':'#f7931a'}}>{recipientAddress}</div>
-              {ownWallet&&<div style={{fontSize:11,color:'#22c55e'}}>Your own wallet</div>}
             </div>
-
             <div style={IS.txBox}>
               <div style={IS.txLbl}>Commit Transaction</div>
               <div style={IS.txVal}>{commitTxid}</div>
-              <a href={`https://mempool.space/testnet4/tx/${commitTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>
-                View commit on Mempool.space ↗
-              </a>
+              <a href={`https://mempool.space/testnet4/tx/${commitTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>View on Mempool.space ↗</a>
             </div>
-
             <div style={IS.txBox}>
               <div style={IS.txLbl}>Reveal Transaction (Inscription)</div>
               <div style={IS.txVal}>{revealTxid}</div>
-              <a href={`https://mempool.space/testnet4/tx/${revealTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>
-                View reveal on Mempool.space ↗
-              </a>
-            </div>
-
-            <div style={{fontSize:11,color:'#555874',textAlign:'center',lineHeight:1.5,maxWidth:320}}>
-              The inscription has been added to your Gallery. Once confirmed, it can be viewed on any Ordinals testnet4 explorer.
+              <a href={`https://mempool.space/testnet4/tx/${revealTxid}`} target="_blank" rel="noopener noreferrer" style={IS.extLink}>View on Mempool.space ↗</a>
             </div>
             <button onClick={handleClose} style={IS.priBtn}>Done</button>
           </div>
