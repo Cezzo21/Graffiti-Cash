@@ -1154,20 +1154,46 @@ function GalleryPage() {
 async function stripMetadata(file) {
   const type = file.type || 'application/octet-stream';
 
-  // Raster images — canvas re-encode strips all EXIF
+  // Raster images — canvas re-encode strips all EXIF; auto-compress to fit ≤390 KB
   if (type.startsWith('image/') && !type.includes('svg')) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width  = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        canvas.getContext('2d').drawImage(img, 0, 0);
+      img.onload = async () => {
         URL.revokeObjectURL(url);
-        canvas.toBlob(blob => {
-          resolve(new File([blob], 'image.png', { type: 'image/png' }));
-        }, 'image/png');
+        const W = img.naturalWidth, H = img.naturalHeight;
+
+        // Encode at given dimensions/format/quality → Blob
+        const encode = (w, h, fmt, q) => new Promise(res => {
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          c.toBlob(b => res(b), fmt, q);
+        });
+
+        // 1. Try lossless PNG (best quality, but can be large)
+        let blob = await encode(W, H, 'image/png');
+        if (blob.size <= MAX_INSCRIPTION_BYTES)
+          return resolve(new File([blob], 'image.png', { type: 'image/png' }));
+
+        // 2. Try JPEG at decreasing quality (original dimensions)
+        for (const q of [0.88, 0.75, 0.60]) {
+          blob = await encode(W, H, 'image/jpeg', q);
+          if (blob.size <= MAX_INSCRIPTION_BYTES)
+            return resolve(new File([blob], 'image.jpg', { type: 'image/jpeg' }));
+        }
+
+        // 3. Scale down dimensions + JPEG until it fits
+        for (const scale of [0.75, 0.5, 0.35, 0.25]) {
+          blob = await encode(Math.round(W * scale), Math.round(H * scale), 'image/jpeg', 0.80);
+          if (blob.size <= MAX_INSCRIPTION_BYTES)
+            return resolve(new File([blob], 'image.jpg', { type: 'image/jpeg' }));
+        }
+
+        reject(new Error(
+          'Image cannot be compressed to fit within the 390 KB inscription limit. ' +
+          'Please use a smaller or simpler image.'
+        ));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not decode image')); };
       img.src = url;
@@ -1181,12 +1207,18 @@ async function stripMetadata(file) {
     ['metadata','title','desc'].forEach(tag =>
       doc.querySelectorAll(tag).forEach(n => n.remove())
     );
-    return new File([new XMLSerializer().serializeToString(doc)], 'image.svg', { type: 'image/svg+xml' });
+    const svgText = new XMLSerializer().serializeToString(doc);
+    if (svgText.length > MAX_INSCRIPTION_BYTES)
+      throw new Error(`SVG is too large (${(svgText.length/1024).toFixed(1)} KB after stripping). Must be under 390 KB.`);
+    return new File([svgText], 'image.svg', { type: 'image/svg+xml' });
   }
 
   // Text / JSON — no embedded metadata; just anonymise the filename
   const ext = type === 'application/json' ? 'json' : 'txt';
-  return new File([await file.arrayBuffer()], `content.${ext}`, { type });
+  const buf = await file.arrayBuffer();
+  if (buf.byteLength > MAX_INSCRIPTION_BYTES)
+    throw new Error(`Text file is too large (${(buf.byteLength/1024).toFixed(1)} KB). Must be under 390 KB.`);
+  return new File([buf], `content.${ext}`, { type });
 }
 
 // ─── UPLOAD TO POOL MODAL ─────────────────────────────────────────────────────
@@ -1206,6 +1238,12 @@ function UploadToPoolModal({ open, onClose }) {
   function handleFileChange(e) {
     const f = e.target.files[0] || null;
     if (preview) URL.revokeObjectURL(preview);
+    if (f && f.size > 10 * 1024 * 1024) {
+      setError('File exceeds 10 MB. Please choose a smaller file.');
+      setFile(null); setPreview(null);
+      e.target.value = '';
+      return;
+    }
     setFile(f);
     setPreview(f && f.type.startsWith('image/') ? URL.createObjectURL(f) : null);
     setError(''); setDone('');
@@ -1263,7 +1301,10 @@ function UploadToPoolModal({ open, onClose }) {
           <span style={{fontSize:13,color:file?'#f7931a':'#555874',fontWeight:file?600:400}}>
             {file ? file.name : 'Click to choose a file'}
           </span>
-          {file && <span style={{fontSize:11,color:'#555874'}}>{file.type||'unknown'} · {(file.size/1024).toFixed(1)} KB · metadata stripped on upload</span>}
+          {file && <span style={{fontSize:11,color:'#555874'}}>
+            {file.type||'unknown'} · {(file.size/1024).toFixed(1)} KB · metadata stripped on upload
+            {file.size > MAX_INSCRIPTION_BYTES && <span style={{color:'#f59e0b'}}> · will be auto-compressed to ≤390 KB</span>}
+          </span>}
         </label>
         {error && <div style={{padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444'}}>{error}</div>}
         {done  && <div style={{padding:'10px 12px',background:'#22c55e18',border:'1px solid #22c55e33',borderRadius:10,fontSize:12,color:'#22c55e',wordBreak:'break-all'}}>{done}</div>}
