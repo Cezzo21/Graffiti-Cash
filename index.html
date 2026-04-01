@@ -25,9 +25,9 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg-primary: #0a0b0f;
+      --bg-primary: #AD322D;
       --bg-secondary: #12141a;
-      --bg-card: #1a1d26;
+      --bg-card: #AD322D;
       --border: #2a2d3e;
       --text-primary: #f0f2ff;
       --text-secondary: #8b8fa8;
@@ -45,7 +45,7 @@
       -webkit-font-smoothing: antialiased;
       overflow: hidden;
     }
-    #root { height: 100vh; display: flex; }
+    #root { height: 100vh; display: flex; width: 100vw; }
     button { font-family: inherit; cursor: pointer; border: none; outline: none; }
     input { font-family: inherit; outline: none; }
     ::-webkit-scrollbar { width: 4px; }
@@ -467,20 +467,20 @@ function PortfolioCard({ assets, onSend, onReceive, onInscribe, onImport, onGall
       <div style={{position:'absolute',top:-40,right:20,width:200,height:200,background:'radial-gradient(circle,rgba(108,99,255,.18),transparent 70%)',pointerEvents:'none'}}/>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24}}>
         <div>
-          <div style={{fontSize:11,color:'#8b8fa8',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Total Portfolio Value</div>
+          <div style={{fontSize:11,color:'#fff',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:6}}>Total Portfolio Value</div>
           <div style={{fontSize:38,fontWeight:800,color:'#f0f2ff',letterSpacing:'-1px',lineHeight:1.1,marginBottom:6}}>{fUSD(display)}</div>
           <div style={{display:'flex',alignItems:'center',gap:6,fontSize:13,fontWeight:500}}>
             <span style={{color:change>=0?'#22c55e':'#ef4444'}}>{change>=0?'▲':'▼'} {fUSD(Math.abs(change))} ({Math.abs(pct).toFixed(2)}%)</span>
-            <span style={{color:'#555874',fontSize:12}}>24h</span>
+            <span style={{color:'#fff',fontSize:12}}>24h</span>
           </div>
         </div>
         <Donut assets={assets}/>
       </div>
       <div style={{display:'flex',flexDirection:'column',gap:10}}>
         <div style={{display:'flex',gap:10}}>
-          <QuickBtn icon={<SendIco/>}     label="Send"     onClick={onSend}      primary/>
+          <QuickBtn icon={<InscrIco/>}    label="Inscribe" onClick={onInscribe}   blue/>
+          <QuickBtn icon={<SendIco/>}     label="Send"     onClick={onSend}/>
           <QuickBtn icon={<RecvIco/>}     label="Receive"  onClick={onReceive}/>
-          <QuickBtn icon={<InscrIco/>}    label="Inscribe" onClick={onInscribe}   orange/>
           <QuickBtn icon={<SwapIco/>}     label="Swap"     onClick={()=>{}}/>
           <QuickBtn icon={<BuyIco/>}      label="Buy"      onClick={()=>{}}/>
         </div>
@@ -490,13 +490,13 @@ function PortfolioCard({ assets, onSend, onReceive, onInscribe, onImport, onGall
               <span style={{fontSize:11,color:'#22c55e',fontWeight:600,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                 {importedWallet.network==='testnet'?'[testnet] ':''}{importedWallet.address.slice(0,12)}…{importedWallet.address.slice(-8)}
               </span>
-              <span style={{fontSize:11,color:'#8b8fa8',flexShrink:0}}>{importedWallet.balance.toFixed(8)} BTC</span>
+              <span style={{fontSize:11,color:'#fff',flexShrink:0}}>{importedWallet.balance.toFixed(8)} BTC</span>
             </div>
           : <button onClick={onImport} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,padding:'9px',borderRadius:10,fontSize:12,fontWeight:600,background:'transparent',border:'1px dashed #2a2d3e',color:'#8b8fa8',cursor:'pointer',width:'100%'}}>
               <ImportIco/> Import Bitcoin Wallet
             </button>
         }
-        <button onClick={onGallery} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,fontSize:14,fontWeight:700,background:'linear-gradient(135deg,#f02d7d,#ff6eb4)',border:'none',color:'#fff',cursor:'pointer',width:'100%',letterSpacing:'.2px',boxShadow:'0 4px 20px rgba(240,45,125,.35)'}}>
+        <button onClick={onGallery} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'14px',borderRadius:12,fontSize:14,fontWeight:700,background:'#F04871',border:'none',color:'#fff',cursor:'pointer',width:'100%',letterSpacing:'.2px',boxShadow:'0 4px 20px rgba(240,72,113,.35)'}}>
           <GalleryIco/> Graffiti Gallery
         </button>
       </div>
@@ -504,21 +504,24 @@ function PortfolioCard({ assets, onSend, onReceive, onInscribe, onImport, onGall
   );
 }
 
-function QuickBtn({ icon, label, onClick, primary, orange }) {
+function QuickBtn({ icon, label, onClick, primary, orange, blue }) {
   const [h,setH] = React.useState(false);
   const bg = primary
     ? (h ? 'linear-gradient(135deg,#7d75ff,#aea9ff)' : 'linear-gradient(135deg,#6c63ff,#9d96ff)')
     : orange
       ? (h ? 'linear-gradient(135deg,#ffaa33,#ffc166)' : 'linear-gradient(135deg,#f7931a,#ffb347)')
-      : (h ? '#2a2d3e' : '#22263a');
-  const shadow = (primary&&h) ? '0 4px 16px rgba(108,99,255,.4)' : (orange&&h) ? '0 4px 16px rgba(247,147,26,.4)' : 'none';
+      : blue
+        ? (h ? '#5a9fff' : '#3B87FF')
+        : (h ? '#2a2d3e' : '#22263a');
+  const shadow = (primary&&h) ? '0 4px 16px rgba(108,99,255,.4)' : (orange&&h) ? '0 4px 16px rgba(247,147,26,.4)' : (blue&&h) ? '0 4px 16px rgba(59,135,255,.4)' : 'none';
+  const accent = primary||orange||blue;
   return (
     <button onClick={onClick} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
       style={{display:'flex',alignItems:'center',gap:7,padding:'9px 16px',borderRadius:10,fontSize:13,fontWeight:600,
         background:bg,
-        border:(primary||orange)?'1px solid transparent':'1px solid #2a2d3e',
-        color:(primary||orange)?'#fff':'#f0f2ff',
-        transform:((primary||orange)&&h)?'translateY(-1px)':'none',
+        border:accent?'1px solid transparent':'1px solid #2a2d3e',
+        color:accent?'#fff':'#f0f2ff',
+        transform:(accent&&h)?'translateY(-1px)':'none',
         boxShadow:shadow,
         transition:'all .15s'}}>
       {icon}<span>{label}</span>
@@ -712,7 +715,7 @@ function Modal({ open, onClose, title, children }) {
   return (
     <div ref={ref} onClick={e=>{if(e.target===ref.current)onClose();}}
       style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',backdropFilter:'blur(5px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}>
-      <div className="slide" style={{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:440,maxWidth:'95vw',boxShadow:'0 24px 64px rgba(0,0,0,.6)'}}>
+      <div className="slide" style={{background:'#12141A',border:'1px solid #2a2d3e',borderRadius:20,width:440,maxWidth:'95vw',boxShadow:'0 24px 64px rgba(0,0,0,.6)'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'22px 24px 16px',borderBottom:'1px solid #2a2d3e'}}>
           <span style={{fontSize:18,fontWeight:700,color:'#f0f2ff'}}>{title}</span>
           <button onClick={onClose} style={{background:'#22263a',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
@@ -789,7 +792,7 @@ function SendModal({ open, onClose, btcAddress, btcTprv, onBalanceUpdate }) {
                 <span style={{color:'#555874',fontSize:11}}>▾</span>
               </button>
               {dropdown&&(
-                <div style={{position:'absolute',top:'100%',left:0,right:0,marginTop:4,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:10,zIndex:10,boxShadow:'0 8px 32px rgba(0,0,0,.5)',overflow:'hidden'}}>
+                <div style={{position:'absolute',top:'100%',left:0,right:0,marginTop:4,background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:10,zIndex:10,boxShadow:'0 8px 32px rgba(0,0,0,.5)',overflow:'hidden'}}>
                   {ASSETS.map(a=>(
                     <button key={a.id} onClick={()=>{setAsset(a);setDropdown(false);setAmount('');}}
                       style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',width:'100%',border:'none',background:asset.id===a.id?'#22263a':'transparent',cursor:'pointer',transition:'background .1s'}}>
@@ -989,8 +992,8 @@ function GalleryPage() {
 
   const IS = {
     badge:(col)=>({display:'inline-flex',alignItems:'center',gap:5,padding:'2px 8px',background:`${col}18`,border:`1px solid ${col}44`,borderRadius:5,fontSize:10,fontWeight:700,color:col,letterSpacing:'.4px'}),
-    uploadBtn:{padding:'7px 16px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer'},
-    card:{background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'},
+    uploadBtn:{padding:'7px 16px',background:'#F04871',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer'},
+    card:{background:'#12141A',border:'1px solid #2a2d3e',borderRadius:14,overflow:'hidden',cursor:'pointer'},
     preview:{height:170,background:'#12141a',display:'flex',alignItems:'center',justifyContent:'center',borderBottom:'1px solid #2a2d3e',overflow:'hidden',position:'relative'},
   };
 
@@ -1026,9 +1029,9 @@ function GalleryPage() {
           {['All','Images','Text'].map(f=>(
             <button key={f} onClick={()=>setFilter(f)}
               style={{padding:'6px 14px',borderRadius:8,border:'1px solid',fontSize:12,fontWeight:500,cursor:'pointer',
-                borderColor:filter===f?'rgba(108,99,255,.4)':'#2a2d3e',
-                background:filter===f?'rgba(108,99,255,.18)':'transparent',
-                color:filter===f?'#a09aff':'#8b8fa8'}}>{f}
+                borderColor:filter===f?'rgba(173,50,45,.6)':'#2a2d3e',
+                background:filter===f?'rgba(173,50,45,.25)':'transparent',
+                color:filter===f?'#f0f2ff':'#8b8fa8'}}>{f}
             </button>
           ))}
           <button onClick={()=>setUploadOpen(true)} style={IS.uploadBtn}>+ Add to Pool</button>
@@ -1075,8 +1078,8 @@ function GalleryPage() {
       {/* Detail modal */}
       {selected&&(
         <div onClick={()=>setSelected(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}}>
-          <div onClick={e=>e.stopPropagation()} style={{background:'#12141a',border:'1px solid #2a2d3e',borderRadius:18,width:'100%',maxWidth:800,maxHeight:'90vh',overflow:'auto',position:'relative',display:'flex'}}>
-            <button onClick={()=>setSelected(null)} style={{position:'absolute',top:12,right:12,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:1}}><CloseIco/></button>
+          <div onClick={e=>e.stopPropagation()} style={{background:'#12141A',border:'1px solid #2a2d3e',borderRadius:18,width:'100%',maxWidth:800,maxHeight:'90vh',overflow:'auto',position:'relative',display:'flex'}}>
+            <button onClick={()=>setSelected(null)} style={{position:'absolute',top:12,right:12,background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:8,color:'#8b8fa8',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:1}}><CloseIco/></button>
             <div style={{width:300,minWidth:300,background:'#0a0b0f',borderRight:'1px solid #2a2d3e',display:'flex',alignItems:'center',justifyContent:'center',padding:16,minHeight:300,overflow:'hidden'}}>
               {renderPreview(selected, true)}
             </div>
@@ -1105,28 +1108,28 @@ function GalleryPage() {
               </div>
               {selected.sourceCid && (
                 <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>IPFS Source</div>
-                  <div style={{display:'flex',alignItems:'center',gap:8,background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px'}}>
                     <span style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',flex:1,wordBreak:'break-all'}}>{selected.sourceCid}</span>
                     <a href={`${IPFS_GW}/${selected.sourceCid}`} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:'#f7931a',fontWeight:600,textDecoration:'none',flexShrink:0}}>↗</a>
                   </div>
                 </div>
               )}
               <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Inscribed By</div>
-                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.inscribedBy}</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.inscribedBy}</div>
               </div>
               {selected.recipient && selected.recipient !== selected.inscribedBy && (
                 <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Recipient</div>
-                  <div style={{fontSize:11,color:'#f7931a',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.recipient}</div>
+                  <div style={{fontSize:11,color:'#f7931a',fontFamily:'monospace',background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all'}}>{selected.recipient}</div>
                 </div>
               )}
               {selected.commitTxId && (
                 <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Commit Transaction</div>
-                  <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.commitTxId}</div>
+                  <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.commitTxId}</div>
                   <a href={`https://mempool.space/testnet4/tx/${selected.commitTxId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>
                 </div>
               )}
               <div><div style={{fontSize:10,color:'#555874',fontWeight:600,textTransform:'uppercase',letterSpacing:'.5px',marginBottom:5}}>Reveal Transaction</div>
-                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.txId}</div>
+                <div style={{fontSize:11,color:'#8b8fa8',fontFamily:'monospace',background:'#AD322D',border:'1px solid #2a2d3e',borderRadius:7,padding:'7px 10px',wordBreak:'break-all',marginBottom:5}}>{selected.txId}</div>
                 {selected.isLive && <a href={`https://mempool.space/testnet4/tx/${selected.txId}`} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:'#f7931a',fontWeight:600,textDecoration:'none'}}>View on Mempool.space ↗</a>}
               </div>
             </div>
@@ -1271,7 +1274,7 @@ function UploadToPoolModal({ open, onClose }) {
   if (!open) return null;
   const IS = {
     overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
-    box:    {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:440,padding:28,display:'flex',flexDirection:'column',gap:16},
+    box:    {background:'#12141A',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:440,padding:28,display:'flex',flexDirection:'column',gap:16},
     priBtn: {padding:'12px',background:'linear-gradient(135deg,#f7931a,#ffb347)',border:'none',borderRadius:12,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer'},
     secBtn: {padding:'12px',background:'#22263a',border:'1px solid #2a2d3e',borderRadius:12,color:'#f0f2ff',fontSize:14,fontWeight:600,cursor:'pointer'},
   };
@@ -1482,7 +1485,7 @@ function SettingsPage({ importedWallet, btcTprv, onImport, onRemove, onImportTpr
             </div>
           </div>
         ) : (
-          <button onClick={onImport} style={{padding:'12px',background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+          <button onClick={onImport} style={{padding:'12px',background:'#3B87FF',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer'}}>
             Import Bitcoin Address
           </button>
         )}
@@ -1510,7 +1513,7 @@ function SettingsPage({ importedWallet, btcTprv, onImport, onRemove, onImportTpr
             {showTprv?'🙈':'👁'}
           </button>
           <button onClick={handleImportTprv}
-            style={{background:'linear-gradient(135deg,#6c63ff,#9d96ff)',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,padding:'10px 16px',cursor:'pointer',whiteSpace:'nowrap'}}>
+            style={{background:'#3B87FF',border:'none',borderRadius:10,color:'#fff',fontSize:13,fontWeight:600,padding:'10px 16px',cursor:'pointer',whiteSpace:'nowrap'}}>
             Import
           </button>
         </div>
@@ -1578,14 +1581,6 @@ function Sidebar({ active, onNav, importedWallet }) {
           );
         })}
       </nav>
-      <div style={{display:'flex',alignItems:'center',gap:10,padding:12,background:'#1a1d26',borderRadius:12}}>
-        <div style={{width:32,height:32,borderRadius:'50%',background:'linear-gradient(135deg,#6c63ff,#a09aff)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,color:'#fff',flexShrink:0}}>C</div>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:12,fontWeight:600,color:'#f0f2ff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>Carol's Wallet</div>
-          <div style={{fontSize:10,color:'#555874',marginTop:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{importedWallet ? importedWallet.address.slice(0,10)+'...'+importedWallet.address.slice(-6) : '0x4a3b...9f2c'}</div>
-        </div>
-        <button style={{background:'transparent',border:'none',color:'#555874',cursor:'pointer',padding:2,display:'flex'}}><CopyIco/></button>
-      </div>
     </aside>
   );
 }
@@ -1644,11 +1639,12 @@ function App() {
     : ASSETS;
 
   return (
-    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
+    <div style={{display:'flex',height:'100vh',width:'100%',overflow:'hidden'}}>
       <Sidebar active={page} onNav={setPage} importedWallet={importedWallet}/>
-      <main style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <main style={{flex:'1 1 0',minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}>
         {/* Top bar */}
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 26px 14px',borderBottom:'1px solid #2a2d3e',background:'#12141a',flexShrink:0}}>
+        <div style={{backgroundImage:'url(./graffiti-cash-bar.png)',backgroundSize:'cover',backgroundPosition:'center',flexShrink:0,minHeight:180,width:'100%',alignSelf:'stretch'}}/>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'18px 26px 14px',borderBottom:'1px solid #2a2d3e',background:'#12141A',flexShrink:0}}>
           <div>
             <h1 style={{fontSize:21,fontWeight:800,color:'#f0f2ff',letterSpacing:'-.5px'}}>
               {{dashboard:'Dashboard',assets:'Assets',history:'History',gallery:'Gallery',nfts:'NFTs',settings:'Settings'}[page]}
@@ -1670,7 +1666,7 @@ function App() {
         </div>
 
         {/* Content */}
-        <div style={{flex:1,overflow:'auto',padding:'18px 26px 26px'}}>
+        <div style={{flex:1,overflow:'auto',padding:'18px 26px 26px',width:'100%',boxSizing:'border-box',background:page==='gallery'?'#000':'transparent'}}>
           {page==='dashboard'&&(
             <div style={{display:'flex',gap:18,height:'100%'}}>
               <div style={{flex:1,display:'flex',flexDirection:'column',gap:14,minWidth:0}}>
@@ -1678,7 +1674,7 @@ function App() {
                 <StatsBar assets={liveAssets}/>
                 <AssetList assets={liveAssets}/>
               </div>
-              <div style={{width:370,flexShrink:0}}><TxHistory txs={importedWallet?.txs}/></div>
+              <div style={{width:460,flexShrink:0}}><TxHistory txs={importedWallet?.txs}/></div>
             </div>
           )}
           {page==='assets'&&(
@@ -1833,7 +1829,7 @@ function InscribeModal({ open, onClose, btcAddress, btcTprv }) {
   const byteCount = contentBytes ? contentBytes.length : new TextEncoder().encode(content).length;
   const IS = {
     overlay:{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20},
-    box:    {background:'#1a1d26',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
+    box:    {background:'#12141A',border:'1px solid #2a2d3e',borderRadius:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflow:'auto',padding:28,display:'flex',flexDirection:'column',gap:16,animation:'slideIn .25s ease'},
     hdr:    {display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4},
     badge:  (col)=>({display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'6px 12px',background:`${col}12`,border:`1px solid ${col}33`,borderRadius:8}),
     lbl:    {display:'block',fontSize:11,fontWeight:600,color:'#8b8fa8',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'},
