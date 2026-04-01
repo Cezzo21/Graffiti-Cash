@@ -1005,7 +1005,7 @@ function GalleryPage() {
   function renderPreview(ins, large) {
     if (ins.sourceCid && ins.type.startsWith('image/') && !ins.type.includes('svg')) {
       return <img src={`${IPFS_GW}/${ins.sourceCid}`} alt={ins.title}
-        style={{width:'100%',height:'100%',objectFit:'cover'}}/>;
+        style={{width:'100%',height:'100%',objectFit:'contain',background:'#000'}}/>;
     }
     if (ins.type === 'image/svg+xml' && ins.content) {
       return <div style={{width:'100%',height:'100%'}} dangerouslySetInnerHTML={{__html:ins.content}}/>;
@@ -1223,7 +1223,9 @@ async function stripMetadata(file) {
 
 // ─── UPLOAD TO POOL MODAL ─────────────────────────────────────────────────────
 function UploadToPoolModal({ open, onClose }) {
+  const [mode, setMode]           = React.useState('file'); // 'file' | 'text'
   const [file, setFile]           = React.useState(null);
+  const [textContent, setTextContent] = React.useState('');
   const [preview, setPreview]     = React.useState(null);
   const [uploading, setUploading] = React.useState(false);
   const [error, setError]         = React.useState('');
@@ -1231,8 +1233,13 @@ function UploadToPoolModal({ open, onClose }) {
 
   function handleClose() {
     if (preview) URL.revokeObjectURL(preview);
-    setFile(null); setPreview(null); setError(''); setDone('');
+    setMode('file'); setFile(null); setTextContent(''); setPreview(null); setError(''); setDone('');
     onClose();
+  }
+
+  function handleModeSwitch(m) {
+    if (preview) URL.revokeObjectURL(preview);
+    setMode(m); setFile(null); setTextContent(''); setPreview(null); setError(''); setDone('');
   }
 
   function handleFileChange(e) {
@@ -1250,19 +1257,24 @@ function UploadToPoolModal({ open, onClose }) {
   }
 
   async function handleUpload() {
-    if (!file) return;
+    const uploadFile = mode === 'text'
+      ? (textContent.trim() ? new File([textContent.trim()], 'content.txt', { type: 'text/plain' }) : null)
+      : file;
+    if (!uploadFile) return;
     setUploading(true); setError(''); setDone('');
     try {
       if (PINATA_JWT === 'YOUR_PINATA_JWT_HERE')
         throw new Error('Pinata JWT not configured. Paste your JWT into the PINATA_JWT constant in index.html.');
-      const clean = await stripMetadata(file);
+      const clean = await stripMetadata(uploadFile);
       const cid   = await pinataUploadPoolItem(clean);
       setDone(`Uploaded · CID: ${cid}`);
       if (preview) { URL.revokeObjectURL(preview); setPreview(null); }
-      setFile(null);
+      setFile(null); setTextContent('');
     } catch(e) { setError(e.message); }
     finally { setUploading(false); }
   }
+
+  const canSubmit = mode === 'text' ? textContent.trim().length > 0 : !!file;
 
   if (!open) return null;
   const IS = {
@@ -1275,43 +1287,75 @@ function UploadToPoolModal({ open, onClose }) {
     <div style={IS.overlay} onClick={handleClose}>
       <div style={IS.box} onClick={e=>e.stopPropagation()}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div style={{fontSize:17,fontWeight:800,color:'#f0f2ff'}}>Add Media to Pool</div>
+          <div style={{fontSize:17,fontWeight:800,color:'#f0f2ff'}}>Add to Pool</div>
           <button onClick={handleClose} style={{background:'transparent',border:'none',color:'#555874',cursor:'pointer',display:'flex'}}><CloseIco/></button>
         </div>
         <div style={{fontSize:12,color:'#555874',lineHeight:1.6}}>
-          Media uploaded here enters the pool for Bitcoin Ordinals inscriptions. It may be randomly selected and permanently etched onto the blockchain by any user.
+          Content uploaded here enters the pool for Bitcoin Ordinals inscriptions. It may be randomly selected and permanently etched onto the blockchain by any user.
         </div>
+
+        {/* Mode toggle */}
+        <div style={{display:'flex',gap:0,background:'#12141a',border:'1px solid #2a2d3e',borderRadius:10,padding:4}}>
+          {[['file','📁  File'],['text','✏️  Text']].map(([m,label])=>(
+            <button key={m} onClick={()=>handleModeSwitch(m)} style={{
+              flex:1,padding:'8px 0',border:'none',borderRadius:7,fontSize:13,fontWeight:600,cursor:'pointer',
+              background:mode===m?'#22263a':'transparent',
+              color:mode===m?'#f0f2ff':'#555874',
+              boxShadow:mode===m?'0 1px 4px rgba(0,0,0,.4)':'none',
+            }}>{label}</button>
+          ))}
+        </div>
+
         <div style={{display:'flex',gap:10,padding:'10px 12px',background:'#22c55e10',border:'1px solid #22c55e30',borderRadius:10}}>
           <span style={{flexShrink:0}}>🛡</span>
           <div style={{fontSize:11,color:'#22c55e',lineHeight:1.6}}>
             <strong>Metadata stripped automatically.</strong> EXIF data (GPS, camera model, author, timestamps) is removed before upload. Your identity is not embedded in the file on IPFS.
           </div>
         </div>
-        <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12,padding:'20px',background:'#12141a',
-          border:`2px dashed ${file?'#f7931a':'#2a2d3e'}`,borderRadius:12,cursor:'pointer',textAlign:'center'}}>
-          <input type="file" accept="image/*,text/*,application/json,image/svg+xml"
-            onChange={handleFileChange} style={{display:'none'}}/>
-          {preview
-            ? <img src={preview} alt="preview" style={{maxHeight:140,maxWidth:'100%',borderRadius:8,objectFit:'contain'}}/>
-            : <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={file?'#f7931a':'#555874'} strokeWidth="1.5" strokeLinecap="round">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-          }
-          <span style={{fontSize:13,color:file?'#f7931a':'#555874',fontWeight:file?600:400}}>
-            {file ? file.name : 'Click to choose a file'}
-          </span>
-          {file && <span style={{fontSize:11,color:'#555874'}}>
-            {file.type||'unknown'} · {(file.size/1024).toFixed(1)} KB · metadata stripped on upload
-            {file.size > MAX_INSCRIPTION_BYTES && <span style={{color:'#f59e0b'}}> · will be auto-compressed to ≤390 KB</span>}
-          </span>}
-        </label>
+
+        {mode === 'file' ? (
+          <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12,padding:'20px',background:'#12141a',
+            border:`2px dashed ${file?'#f7931a':'#2a2d3e'}`,borderRadius:12,cursor:'pointer',textAlign:'center'}}>
+            <input type="file" accept="image/*,text/*,application/json,image/svg+xml"
+              onChange={handleFileChange} style={{display:'none'}}/>
+            {preview
+              ? <img src={preview} alt="preview" style={{maxHeight:140,maxWidth:'100%',borderRadius:8,objectFit:'contain'}}/>
+              : <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={file?'#f7931a':'#555874'} strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+            }
+            <span style={{fontSize:13,color:file?'#f7931a':'#555874',fontWeight:file?600:400}}>
+              {file ? file.name : 'Click to choose a file'}
+            </span>
+            {file && <span style={{fontSize:11,color:'#555874'}}>
+              {file.type||'unknown'} · {(file.size/1024).toFixed(1)} KB · metadata stripped on upload
+              {file.size > MAX_INSCRIPTION_BYTES && <span style={{color:'#f59e0b'}}> · will be auto-compressed to ≤390 KB</span>}
+            </span>}
+          </label>
+        ) : (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            <textarea
+              value={textContent}
+              onChange={e=>{ setTextContent(e.target.value); setError(''); setDone(''); }}
+              placeholder="Type or paste your text here…"
+              maxLength={390000}
+              style={{width:'100%',minHeight:140,padding:'12px',background:'#12141a',border:`1px solid ${textContent?'#f7931a':'#2a2d3e'}`,
+                borderRadius:12,color:'#f0f2ff',fontSize:13,lineHeight:1.6,resize:'vertical',
+                fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}
+            />
+            <div style={{fontSize:11,color:'#555874',textAlign:'right'}}>
+              {textContent.length.toLocaleString()} / 390,000 chars
+            </div>
+          </div>
+        )}
+
         {error && <div style={{padding:'10px 12px',background:'#ef444418',border:'1px solid #ef444433',borderRadius:10,fontSize:12,color:'#ef4444'}}>{error}</div>}
         {done  && <div style={{padding:'10px 12px',background:'#22c55e18',border:'1px solid #22c55e33',borderRadius:10,fontSize:12,color:'#22c55e',wordBreak:'break-all'}}>{done}</div>}
         <div style={{display:'flex',gap:10}}>
           <button onClick={handleClose} style={{...IS.secBtn,flex:1}}>Cancel</button>
-          <button onClick={handleUpload} disabled={!file||uploading} style={{...IS.priBtn,flex:2,opacity:(!file||uploading)?0.6:1}}>
-            {uploading ? 'Stripping metadata & uploading…' : 'Upload to IPFS'}
+          <button onClick={handleUpload} disabled={!canSubmit||uploading} style={{...IS.priBtn,flex:2,opacity:(!canSubmit||uploading)?0.6:1}}>
+            {uploading ? 'Uploading…' : 'Upload to IPFS'}
           </button>
         </div>
       </div>
